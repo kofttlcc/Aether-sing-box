@@ -19,6 +19,7 @@ import (
 	"github.com/sagernet/sing-box/dns/transport/mdns"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/protocol/aether"
 	"github.com/sagernet/sing-box/protocol/anytls"
 	"github.com/sagernet/sing-box/protocol/block"
 	"github.com/sagernet/sing-box/protocol/bridge"
@@ -63,6 +64,7 @@ func InboundRegistry() *inbound.Registry {
 
 	shadowsocks.RegisterInbound(registry)
 	snell.RegisterInbound(registry)
+	aether.RegisterInbound(registry)
 	vmess.RegisterInbound(registry)
 	trojan.RegisterInbound(registry)
 	naive.RegisterInbound(registry)
@@ -92,6 +94,7 @@ func OutboundRegistry() *outbound.Registry {
 	http.RegisterOutbound(registry)
 	shadowsocks.RegisterOutbound(registry)
 	snell.RegisterOutbound(registry)
+	aether.RegisterOutbound(registry)
 	vmess.RegisterOutbound(registry)
 	trojan.RegisterOutbound(registry)
 	registerNaiveOutbound(registry)

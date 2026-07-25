@@ -13,6 +13,7 @@ const (
 	TypeMixed              = "mixed"
 	TypeShadowsocks        = "shadowsocks"
 	TypeSnell              = "snell"
+	TypeAether             = "aether"
 	TypeVMess              = "vmess"
 	TypeTrojan             = "trojan"
 	TypeNaive              = "naive"
@@ -76,6 +77,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "Shadowsocks"
 	case TypeSnell:
 		return "Snell"
+	case TypeAether:
+		return "Aether"
 	case TypeVMess:
 		return "VMess"
 	case TypeTrojan:
