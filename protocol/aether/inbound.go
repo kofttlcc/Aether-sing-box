@@ -65,19 +65,28 @@ func (in *Inbound) Close() error {
 	return in.listener.Close()
 }
 
-func (in *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+func (in *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	aetherConn, header, err := NewServerConn(conn, in.psk, in.replayFilter)
 	if err != nil {
+		N.CloseOnHandshakeFailure(conn, onClose, err)
 		return
 	}
 
-	_, metadata := adapter.ExtendContext(ctx)
 	metadata.Inbound = in.Tag()
 	metadata.InboundType = in.Type()
+	metadata.Destination = M.ParseSocksaddr(header.Address)
+
+	in.logger.InfoContext(ctx, "inbound connection to ", metadata.Destination)
+	in.router.RouteConnectionEx(ctx, aetherConn, metadata, onClose)
+}
+
+func (in *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+	_, metadata := adapter.ExtendContext(ctx)
 	if source.IsValid() {
 		metadata.Source = source
 	}
-	metadata.Destination = M.ParseSocksaddr(header.Address)
-
-	in.router.RouteConnectionEx(ctx, aetherConn, *metadata, onClose)
+	if destination.IsValid() {
+		metadata.Destination = destination
+	}
+	in.NewConnection(ctx, conn, *metadata, onClose)
 }

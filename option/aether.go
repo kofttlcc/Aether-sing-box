@@ -7,6 +7,7 @@ type AetherInboundOptions struct {
 }
 
 type AetherOutboundOptions struct {
+	DialerOptions
 	ServerOptions
 	Password string `json:"password"`
 }
