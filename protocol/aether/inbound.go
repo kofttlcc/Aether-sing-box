@@ -7,6 +7,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
+	"github.com/sagernet/sing-box/common/uot"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -21,7 +22,7 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	router       adapter.ConnectionRouter
+	router       adapter.ConnectionRouterEx
 	logger       logger.ContextLogger
 	listener     *listener.Listener
 	psk          [32]byte
@@ -37,7 +38,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 
 	in := &Inbound{
 		Adapter:      inbound.NewAdapter(C.TypeAether, tag),
-		router:       router,
+		router:       uot.NewRouter(router, logger),
 		logger:       logger,
 		psk:          psk,
 		replayFilter: NewReplayFilter(10000, timeLimit),
