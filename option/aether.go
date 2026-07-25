@@ -9,5 +9,6 @@ type AetherInboundOptions struct {
 type AetherOutboundOptions struct {
 	DialerOptions
 	ServerOptions
-	Password string `json:"password"`
+	Network  NetworkList `json:"network,omitempty"`
+	Password string      `json:"password"`
 }
