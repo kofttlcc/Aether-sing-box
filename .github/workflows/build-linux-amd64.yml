@@ -2,10 +2,10 @@ name: Build sing-box (Linux x86_64)
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "testing" ]
     tags: [ "v*" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "testing" ]
   workflow_dispatch:
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
           go build -v -trimpath \
             -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=Custom-Aether" \
-            -tags "with_gvisor,with_dhcp,with_wireguard,with_ech,with_utls,with_clash_api" \
+            -tags "with_gvisor,with_dhcp,with_wireguard,with_utls,with_clash_api" \
             -o build/sing-box-linux-amd64 ./cmd/sing-box
 
       - name: Upload Build Artifact
