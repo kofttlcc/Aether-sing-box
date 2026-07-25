@@ -12,6 +12,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 func RegisterInbound(registry *inbound.Registry) {
@@ -42,23 +43,19 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		replayFilter: NewReplayFilter(10000, timeLimit),
 	}
 
-	l, err := listener.New(listener.Options{
-		Context:       ctx,
-		Logger:        logger,
-		Network:       []string{N.NetworkTCP},
-		Listen:        options.ListenOptions,
-		Connection:    in,
+	in.listener = listener.New(listener.Options{
+		Context:           ctx,
+		Logger:            logger,
+		Network:           []string{N.NetworkTCP},
+		Listen:            options.ListenOptions,
+		ConnectionHandler: in,
 	})
-	if err != nil {
-		return nil, err
-	}
-	in.listener = l
 
 	return in, nil
 }
 
 func (in *Inbound) Start(stage adapter.StartStage) error {
-	if stage != adapter.StartStageStarted {
+	if stage != adapter.StartStateStart {
 		return nil
 	}
 	return in.listener.Start()
@@ -68,13 +65,19 @@ func (in *Inbound) Close() error {
 	return in.listener.Close()
 }
 
-func (in *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+func (in *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
 	aetherConn, header, err := NewServerConn(conn, in.psk, in.replayFilter)
 	if err != nil {
-		return err
+		return
 	}
 
+	_, metadata := adapter.ExtendContext(ctx)
+	metadata.Inbound = in.Tag()
+	metadata.InboundType = in.Type()
+	if source.IsValid() {
+		metadata.Source = source
+	}
 	metadata.Destination = M.ParseSocksaddr(header.Address)
-	in.router.RouteConnectionEx(ctx, aetherConn, metadata, nil)
-	return nil
+
+	in.router.RouteConnectionEx(ctx, aetherConn, *metadata, onClose)
 }
