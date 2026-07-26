@@ -15,4 +15,5 @@ type AetherOutboundOptions struct {
 	Password             string                   `json:"password"`
 	HeartbeatIntervalSec int                      `json:"heartbeat_interval_sec,omitempty"`
 	Multiplex            *OutboundMultiplexOptions `json:"multiplex,omitempty"`
+	UDPOverTCP           *UDPOverTCPOptions       `json:"udp_over_tcp,omitempty"`
 }
