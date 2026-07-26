@@ -8,6 +8,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/mux"
+	"github.com/sagernet/sing-box/common/uot"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -29,6 +30,7 @@ type Outbound struct {
 	serverAddr           M.Socksaddr
 	psk                  [32]byte
 	heartbeatIntervalSec int
+	uotClient            *uot.Client
 	multiplexDialer      *mux.Client
 }
 
@@ -39,7 +41,7 @@ func (d *aetherDialer) DialContext(ctx context.Context, network string, destinat
 }
 
 func (d *aetherDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
-	return nil, E.New("packet connection unsupported on aether multiplex")
+	return nil, E.New("packet connection unsupported on raw Aether dialer")
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AetherOutboundOptions) (adapter.Outbound, error) {
@@ -57,9 +59,19 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		heartbeatIntervalSec: options.HeartbeatIntervalSec,
 	}
 
-	out.multiplexDialer, err = mux.NewClientWithOptions((*aetherDialer)(out), logger, common.PtrValueOrDefault(options.Multiplex))
-	if err != nil {
-		return nil, err
+	uotOptions := common.PtrValueOrDefault(options.UDPOverTCP)
+	if !uotOptions.Enabled {
+		out.multiplexDialer, err = mux.NewClientWithOptions((*aetherDialer)(out), logger, common.PtrValueOrDefault(options.Multiplex))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if uotOptions.Enabled {
+		out.uotClient = &uot.Client{
+			Dialer:  (*aetherDialer)(out),
+			Version: uotOptions.Version,
+		}
 	}
 
 	return out, nil
@@ -86,14 +98,42 @@ func (out *Outbound) DialContext(ctx context.Context, network string, destinatio
 	metadata.Destination = destination
 
 	if out.multiplexDialer == nil {
-		out.logger.InfoContext(ctx, "outbound connection to ", destination)
+		switch N.NetworkName(network) {
+		case N.NetworkTCP:
+			out.logger.InfoContext(ctx, "outbound connection to ", destination)
+		case N.NetworkUDP:
+			if out.uotClient != nil {
+				out.logger.InfoContext(ctx, "outbound UoT connect packet connection to ", destination)
+				return out.uotClient.DialContext(ctx, network, destination)
+			} else {
+				out.logger.InfoContext(ctx, "outbound packet connection to ", destination)
+			}
+		}
 		return out.dial(ctx, network, destination)
 	} else {
-		out.logger.InfoContext(ctx, "outbound multiplex connection to ", destination)
+		switch N.NetworkName(network) {
+		case N.NetworkTCP:
+			out.logger.InfoContext(ctx, "outbound multiplex connection to ", destination)
+		case N.NetworkUDP:
+			if out.uotClient != nil {
+				out.logger.InfoContext(ctx, "outbound UoT connect packet connection to ", destination)
+				return out.uotClient.DialContext(ctx, network, destination)
+			} else {
+				out.logger.InfoContext(ctx, "outbound multiplex packet connection to ", destination)
+			}
+		}
 		return out.multiplexDialer.DialContext(ctx, network, destination)
 	}
 }
 
 func (out *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
-	return nil, E.New("Aether protocol does not support UDP packet listening")
+	ctx, metadata := adapter.ExtendContext(ctx)
+	metadata.Outbound = out.Tag()
+	metadata.Destination = destination
+
+	if out.uotClient != nil {
+		out.logger.InfoContext(ctx, "outbound UoT packet connection to ", destination)
+		return out.uotClient.ListenPacket(ctx, destination)
+	}
+	return nil, E.New("Aether protocol requires udp_over_tcp enabled to proxy UDP packets")
 }
