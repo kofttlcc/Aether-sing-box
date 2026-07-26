@@ -7,9 +7,11 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing-box/common/mux"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -22,10 +24,22 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 type Outbound struct {
 	outbound.Adapter
-	logger     logger.ContextLogger
-	dialer     N.Dialer
-	serverAddr M.Socksaddr
-	psk        [32]byte
+	logger               logger.ContextLogger
+	dialer               N.Dialer
+	serverAddr           M.Socksaddr
+	psk                  [32]byte
+	heartbeatIntervalSec int
+	multiplexDialer      *mux.Client
+}
+
+type aetherDialer Outbound
+
+func (d *aetherDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	return (*Outbound)(d).dial(ctx, network, destination)
+}
+
+func (d *aetherDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	return nil, E.New("packet connection unsupported on aether multiplex")
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AetherOutboundOptions) (adapter.Outbound, error) {
@@ -35,13 +49,35 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 
 	out := &Outbound{
-		Adapter:    outbound.NewAdapterWithDialerOptions(C.TypeAether, tag, options.Network.Build(), options.DialerOptions),
-		logger:     logger,
-		dialer:     outboundDialer,
-		serverAddr: options.ServerOptions.Build(),
-		psk:        KeyFromPassword(options.Password),
+		Adapter:              outbound.NewAdapterWithDialerOptions(C.TypeAether, tag, options.Network.Build(), options.DialerOptions),
+		logger:               logger,
+		dialer:               outboundDialer,
+		serverAddr:           options.ServerOptions.Build(),
+		psk:                  KeyFromPassword(options.Password),
+		heartbeatIntervalSec: options.HeartbeatIntervalSec,
 	}
+
+	out.multiplexDialer, err = mux.NewClientWithOptions((*aetherDialer)(out), logger, common.PtrValueOrDefault(options.Multiplex))
+	if err != nil {
+		return nil, err
+	}
+
 	return out, nil
+}
+
+func (out *Outbound) dial(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	rawConn, err := out.dialer.DialContext(ctx, N.NetworkTCP, out.serverAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	target := destination.String()
+	aetherConn, err := NewClientConn(rawConn, out.psk, target, nil, out.heartbeatIntervalSec)
+	if err != nil {
+		return nil, err
+	}
+
+	return aetherConn, nil
 }
 
 func (out *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
@@ -49,23 +85,15 @@ func (out *Outbound) DialContext(ctx context.Context, network string, destinatio
 	metadata.Outbound = out.Tag()
 	metadata.Destination = destination
 
-	out.logger.InfoContext(ctx, "outbound connection to ", destination)
-
-	rawConn, err := out.dialer.DialContext(ctx, N.NetworkTCP, out.serverAddr)
-	if err != nil {
-		return nil, err
+	if out.multiplexDialer == nil {
+		out.logger.InfoContext(ctx, "outbound connection to ", destination)
+		return out.dial(ctx, network, destination)
+	} else {
+		out.logger.InfoContext(ctx, "outbound multiplex connection to ", destination)
+		return out.multiplexDialer.DialContext(ctx, network, destination)
 	}
-
-	target := destination.String()
-	aetherConn, err := NewClientConn(rawConn, out.psk, target, nil)
-	if err != nil {
-		_ = rawConn.Close()
-		return nil, err
-	}
-
-	return aetherConn, nil
 }
 
 func (out *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
-	return nil, E.New("UDP packet connection is not supported for aether protocol")
+	return nil, E.New("Aether protocol does not support UDP packet listening")
 }
