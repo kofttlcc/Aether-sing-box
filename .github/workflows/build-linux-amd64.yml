@@ -27,7 +27,7 @@ jobs:
           mkdir -p build/
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
           go build -v -trimpath \
-            -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=Custom-Aether" \
+            -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=1.14.0-beta.4-Custom-Aether" \
             -tags "with_gvisor,with_dhcp,with_wireguard,with_utls,with_clash_api" \
             -o build/sing-box-linux-amd64 ./cmd/sing-box
 
