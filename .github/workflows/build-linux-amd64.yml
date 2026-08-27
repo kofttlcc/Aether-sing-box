@@ -11,6 +11,8 @@ on:
 jobs:
   build-linux-amd64:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -31,17 +33,21 @@ jobs:
             -tags "with_gvisor,with_dhcp,with_wireguard,with_utls,with_clash_api" \
             -o build/sing-box-linux-amd64 ./cmd/sing-box
 
+      - name: Release Binary (GitHub Release)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        with:
+          tag_name: v1.14.0-rc.1-Custom-Aether
+          name: "Aether-sing-box v1.14.0-rc.1 (Linux x86_64)"
+          prerelease: true
+          files: build/sing-box-linux-amd64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload Build Artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: sing-box-linux-amd64
           path: build/sing-box-linux-amd64
           retention-days: 7
-
-      - name: Release Binary (On Tag Push)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/sing-box-linux-amd64
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
