@@ -29,7 +29,7 @@ jobs:
           mkdir -p build/
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
           go build -v -trimpath \
-            -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=1.14.0-rc.1-Custom-Aether" \
+            -ldflags "-s -w -X github.com/sagernet/sing-box/constant.Version=1.14.0-Custom-Aether" \
             -tags "with_gvisor,with_dhcp,with_wireguard,with_utls,with_clash_api" \
             -o build/sing-box-linux-amd64 ./cmd/sing-box
 
@@ -37,9 +37,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
         with:
-          tag_name: v1.14.0-rc.1-Custom-Aether
-          name: "Aether-sing-box v1.14.0-rc.1 (Linux x86_64)"
-          prerelease: true
+          tag_name: v1.14.0-Custom-Aether
+          name: "Aether-sing-box v1.14.0 (Linux x86_64)"
+          prerelease: false
           files: build/sing-box-linux-amd64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
