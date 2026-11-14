@@ -93,10 +93,28 @@ if _, err := c.Conn.Write(encrypted); err != nil {
 
 ---
 
-## 四、評估結論：為何不能維持現狀並直接建立上游自動打包 Action？
+## 四、專線場景（不經 GFW、僅需規避省級防火牆）重評估結論
 
-1. **安全性不達標**：Aether v1 的線框格式（Wire Format）從第 0 個位元組起即暴露高熵隨機特徵、缺乏 TLS/REALITY 外層保護、缺少 `serverSalt` 與前向安全性，且存在無需流量的主動探測預言機。若直接建立每週自動拉取上游 `sing-box` 並融合 Aether v1 打包的流水線，只會將已知的高危協議缺陷持續部署到生產環境，無法解決「安全事故頻發」的核心問題。
-2. **線框不相容演進需求**：修復上述問題必須引入 **版本協商（`Version = 0x02`）**、**外層 TLS 1.3 / REALITY 與 Fallback 偽裝整合**、**雙向隨機鹽（`clientSalt` + `serverSalt`）與 AEAD 長度頭加密（或 TLS 內層認證填充幀）**、**顯式協議指令（TCP / UDP / Mux）** 以及 **無死鎖控制幀機制**。這屬於協議層的全新迭代（**Aether v2 / `AetherFlow-v2`**）。
-3. **行動決策**：
-   - 保持 `main` 分支凍結不動，避免觸發線上 Release 覆蓋或影響既有舊版節點緊急相容。
-   - 切換至全新獨立開發分支 **`dev/aether-v2`**，執行《Aether v2 新一代協議架構設計與開發計畫》（見同目錄 [`AETHER_V2_DEVELOPMENT_PLAN.md`](./AETHER_V2_DEVELOPMENT_PLAN.md)），並在 **Phase 5** 完成 Aether v2 驗收後正式啟用「每週自動追蹤上游 `SagerNet/sing-box` 正式版並融合打包」的 GitHub Actions 工作流。
+針對實際拓撲為**「專線線路傳輸、不經過國家級 GFW，僅需規避國內省級防火牆/運營商機房審計識別為常規代理協議，並具備足夠加密安全性與高併發可靠性」**的前提，重新評估如下：
+
+### 4.1 剔除外層 TLS 在專線場景下的工程合理性（正向收益）
+1. **徹底規避省牆/機房「未備案域名 SNI 阻斷」**：國內省級防火牆與入口機房（BGP/專線入口）普遍對 TLS `ClientHello` 的 `SNI` 實施備案白名單審計。剔除外層 TLS / REALITY 後，線路上**零明文 SNI、零 HTTP Host 暴露**，反而消除了因偽裝域名未備案而遭省牆阻斷的風險。
+2. **消除雙重加密與額外 1-RTT 握手延遲**：專線頻寬昂貴且追求極致低延遲，移除外層 TLS 與 Fallback Web 服務後，僅保留單層硬體加速 AEAD 加密，可大幅降低 CPU 開銷、減少約 45% 協議層代碼複雜度，並降低後續跟隨上游 `sing-box` 升級時的維護成本。
+
+### 4.2 為何在「無外層 TLS 的專線環境」下，Aether v1 依然不可繼續使用？（必須開發純二進位 Aether v2）
+一旦剔除外層 TLS，**Aether 內層線框本身就是暴露在省牆 DPI 與公網掃描器面前的唯一防線**。在此條件下，Aether v1 的缺陷依然致命：
+
+1. **仍會被省級防火牆與運營商流特徵審計識別為代理協議**：
+   - **`[2B, NB]` 雙次寫入封包分裂異常（`S-2`）**：`Conn.Write` 每幀先寫 2 Bytes 長度再寫密文，導致整條 TCP 流中近半數封包為 `tcp.len == 2`，並伴隨固定週期的 `[2B, 17B]` 心跳包，極易命中省網旁路設備的異常代理流統計規則。
+   - **隧道嵌套流特徵暴露（Inner TLS-in-TLS）**：`Outbound.dial` 固定先發 0 負載握手包，緊接著原樣透傳內層 HTTPS `ClientHello`（~517B）與憑證突發包，未做首部幾幀的長度塑形，容易被省網「疑似加密代理隧道」模型標記。
+   - **國內測繪與合規掃描器（FOFA / 機房巡檢）100% 識別（`S-1` / `S-7`）**：`NewServerConn` 無握手超時 + `HandleProbe` 固定 `200ms` 斷線，使機房合規掃描器一探即知，且空連線即可耗盡伺服器 FD。
+2. **加密安全性存在嚴重密碼學破綻（不滿足「足夠的加密安全性」）**：
+   - **重放/重啟導致 AEAD 金鑰與 Nonce 完全重用（`S-3` + `S-5`）**：缺少 `ServerSalt`，且專線高併發下極易在 30 秒內突破 `ReplayFilter` 的 10,000 筆上限觸發整表清空；一旦重放穿透或服務重啟，ChaCha20-Poly1305 金鑰流與認證金鑰立即崩潰。
+   - **長度頭未認證 + 雙向共用 `maskKey` + `seq % 15` 錯誤（`S-1` + `S-4`）**：允許竄改幀邊界，且攻擊者無需截獲專線流量即可透過 34B 探測預言機離線爆破弱密碼。
+   - **零前向安全性（`S-6`）**：靜態 `SHA-256(password)` 無 X25519 臨時金鑰交換，密鑰一旦外洩可回溯解密全部歷史專線流量。
+3. **專線高併發與多路複用（Mux）下的穩定性致命傷（`R-1`～`R-6`）**：
+   - 專線場景普遍開啟 `multiplex` 跑滿頻寬，此時 `R-1`（`Read` 內同步寫 `FramePong` 雙向死鎖）、`R-2`（`WriteDeadline` 導致 Nonce 錯位斷流）、`R-3`（`lastRead` 從未檢查導致半開黑洞卡死）與 `R-5`（開啟 `multiplex` 後 `ListenPacket` UDP 直接報錯不可用）會直接引發頻繁斷流與業務故障。
+
+### 4.3 行動決策
+- **不引入外層 TLS / REALITY / V2Ray Transport 複雜度**，改為在獨立分支 **`dev/aether-v2`** 開發**「專線純淨版 Aether v2（Pure-Binary Dedicated-Line Edition）」**（詳見更新後的 [`AETHER_V2_DEVELOPMENT_PLAN.md`](./AETHER_V2_DEVELOPMENT_PLAN.md)）。
+- 待專線純淨版 Aether v2（預計僅需約 4～4.5 個工作天）完成實作與壓測合入後，立即於 Phase 4 啟用「每週自動檢查上游 `SagerNet/sing-box` 正式版並融合打包」的 GitHub Action。
