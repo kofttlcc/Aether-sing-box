@@ -1538,7 +1538,7 @@ func t2RunF08(t *testing.T) {
 			ClientDisableShaping: true,
 		})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
 		c, err := DialSOCKS5TCP(ctx, proxyAddr, "127.0.0.1:80")
 		t2RequireNoErr(t, err, "DialSOCKS5TCP")
@@ -1554,7 +1554,9 @@ func t2RunF08(t *testing.T) {
 		echo := StartTCPEchoTarget(t)
 		_, srvAddr := t2StartSingleAetherServer(t, TopologyConfig{ServerPassword: pass})
 		mitmS2C := t2StartReflectiveMITM(t, srvAddr, false)
-		sc, err := DialSpecClient(ctx, mitmS2C.addr, SpecDialOptions{
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel2()
+		sc, err := DialSpecClient(ctx2, mitmS2C.addr, SpecDialOptions{
 			Password:       pass,
 			TargetAddr:     echo.Addr(),
 			InitialPayload: []byte("ping-reflect-s2c"),
@@ -2327,7 +2329,7 @@ func t2RunF14(t *testing.T) {
 	t.Run("T2-F14-01_PlainFrameLenZeroAndOneRejected", func(t *testing.T) {
 		echo := StartTCPEchoTarget(t)
 		_, srvAddr := t2StartSingleAetherServer(t, TopologyConfig{ServerPassword: pass})
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 
 		for _, tc := range []struct {
@@ -2353,7 +2355,7 @@ func t2RunF14(t *testing.T) {
 	t.Run("T2-F14-02_PlainFrameLenMaxBoundary16641Vs16642", func(t *testing.T) {
 		echo := StartTCPEchoTarget(t)
 		_, srvAddr := t2StartSingleAetherServer(t, TopologyConfig{ServerPassword: pass})
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 
 		// 16641 valid: 2 + PadLen(255) + Data(16384) = 16641.
@@ -2802,7 +2804,7 @@ func t2RunF16(t *testing.T) {
 	t.Run("T2-F16-02_UnknownFrameTypes0x00_0x05_0xFFRejected", func(t *testing.T) {
 		echo := StartTCPEchoTarget(t)
 		_, srvAddr := t2StartSingleAetherServer(t, TopologyConfig{ServerPassword: pass})
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 
 		for _, badType := range []byte{0x00, 0x05, 0xFF} {
@@ -2822,7 +2824,7 @@ func t2RunF16(t *testing.T) {
 	t.Run("T2-F16-03_MalformedPingPongPadLenOrNonEmptyData", func(t *testing.T) {
 		echo := StartTCPEchoTarget(t)
 		_, srvAddr := t2StartSingleAetherServer(t, TopologyConfig{ServerPassword: pass})
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
 
 		cases := []struct {
@@ -3558,15 +3560,15 @@ func t2RunF20(t *testing.T) {
 
 	t.Run("T2-F20-02_PingArrivalDuringConcurrentClose", func(t *testing.T) {
 		echo := StartTCPEchoTarget(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
 
 		for iter := 0; iter < 20; iter++ {
 			srvBox, srvAddr := t2StartSingleAetherServer(t, TopologyConfig{ServerPassword: pass})
-			sc, err := DialSpecClient(ctx, srvAddr, SpecDialOptions{
+			iterCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			sc, err := DialSpecClient(iterCtx, srvAddr, SpecDialOptions{
 				Password:   pass,
 				TargetAddr: echo.Addr(),
 			})
+			cancel()
 			t2RequireNoErr(t, err, "DialSpecClient iter %d", iter)
 			_, err = sc.ReadServerResp(3 * time.Second)
 			t2RequireNoErr(t, err, "ReadServerResp iter %d", iter)

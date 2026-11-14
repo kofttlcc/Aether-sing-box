@@ -14,6 +14,7 @@ permissions:
 jobs:
   build-linux-amd64:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
@@ -46,7 +47,7 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: |
-          go test -race ./cmd/sing-box/... ./protocol/aether/...
+          go test -race ./cmd/sing-box/... ./protocol/aether/... -timeout 30m
 
       - name: Build sing-box (Linux amd64)
         run: |

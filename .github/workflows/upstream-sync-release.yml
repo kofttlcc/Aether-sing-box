@@ -12,6 +12,7 @@ jobs:
   sync-and-release:
     name: Sync Upstream and Release
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -234,7 +235,7 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           set -euo pipefail
-          CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/...
+          CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/... -timeout 30m
 
       - name: Build and Package Multi-Arch Static Binaries
         if: steps.idempotency.outputs.should_proceed == 'true'

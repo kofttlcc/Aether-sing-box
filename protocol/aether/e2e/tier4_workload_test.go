@@ -571,11 +571,16 @@ func testT405BombardmentUnderLiveLoad(t *testing.T) {
 	)
 
 	// 220 concurrent active scanner & replay probes against Server.
+	// Stagger initial SYN waves slightly (32 per 5ms -> 30ms total) so macOS somaxconn=128
+	// does not reset SYNs in kernel before Accept(), while all 220 overlap across the 3s..10s drain window.
 	for i := 0; i < 220; i++ {
 		i := i
 		scanWG.Add(1)
 		go func() {
 			defer scanWG.Done()
+			if wave := i / 32; wave > 0 {
+				time.Sleep(time.Duration(wave) * 5 * time.Millisecond)
+			}
 			payload := scannerPayloads[i%len(scannerPayloads)]
 			pr, pErr := SendRawProbe(topo.ServerAddr(), payload, true, 13*time.Second)
 			if pErr != nil || pr.ClosedByRST || len(pr.BytesReceived) > 0 || !pr.ClosedCleanEOF {

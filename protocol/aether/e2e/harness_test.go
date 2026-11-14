@@ -1927,7 +1927,15 @@ type ProbeResult struct {
 // SendRawProbe dials addr, sends payload (optionally calling CloseWrite()),
 // and measures server bytes + FIN vs RST close within maxWait.
 func SendRawProbe(addr string, payload []byte, halfCloseWrite bool, maxWait time.Duration) (ProbeResult, error) {
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	var conn net.Conn
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		conn, err = net.DialTimeout("tcp", addr, 3*time.Second)
+		if err == nil || !IsConnReset(err) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		return ProbeResult{Err: err}, err
 	}

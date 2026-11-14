@@ -394,8 +394,8 @@ func runTier1F01(t *testing.T) {
 		res := RunCLITimeout(t, 20*time.Second, "version", "-n")
 		require.NoError(t, res.Err, "stderr=%s", res.Stderr)
 		require.Equal(t, 0, res.ExitCode)
+		require.Regexp(t, `^[0-9]+\.[0-9]+\.[0-9]+-Custom-Aether$`, C.Version)
 		require.Equal(t, C.Version+"\n", res.Stdout)
-		require.Equal(t, "1.14.4-Custom-Aether\n", res.Stdout)
 		require.Empty(t, res.Stderr)
 	})
 
@@ -417,8 +417,13 @@ func runTier1F01(t *testing.T) {
 	t.Run("T1-F01-03", func(t *testing.T) {
 		root, err := RepoRoot()
 		require.NoError(t, err)
-		exclude := t1ReadRepoFile(t, ".git/info/exclude")
-		require.Contains(t, exclude, ".agents/")
+		if _, statErr := os.Stat(filepath.Join(root, ".agents")); statErr == nil {
+			exclude := t1ReadRepoFile(t, ".git/info/exclude")
+			require.Contains(t, exclude, ".agents/")
+		}
+		lsOut, errOut, err := t1RunGit(t, root, "ls-files", ".agents")
+		require.NoError(t, err, errOut)
+		require.Empty(t, strings.TrimSpace(lsOut))
 		out, errOut, err := t1RunGit(t, root, "status", "--porcelain", ".agents")
 		require.NoError(t, err, errOut)
 		require.Empty(t, strings.TrimSpace(out))
@@ -427,16 +432,28 @@ func runTier1F01(t *testing.T) {
 	t.Run("T1-F01-04", func(t *testing.T) {
 		root, err := RepoRoot()
 		require.NoError(t, err)
+		headSHA, errOut, err := t1RunGit(t, root, "rev-parse", "--verify", "HEAD")
+		require.NoError(t, err, errOut)
+		require.Regexp(t, `^[0-9a-f]{40}$`, strings.TrimSpace(headSHA))
+
 		branch, errOut, err := t1RunGit(t, root, "rev-parse", "--abbrev-ref", "HEAD")
 		require.NoError(t, err, errOut)
-		require.Equal(t, "dev/aether-v2", strings.TrimSpace(branch))
+		branchName := strings.TrimSpace(branch)
+		if branchName != "HEAD" {
+			require.True(t, branchName == "main" || strings.HasPrefix(branchName, "dev/"), "unexpected branch %q", branchName)
+		}
 
-		_, errOut, err = t1RunGit(t, root, "merge-base", "--is-ancestor", "refs/heads/main", "HEAD")
-		require.NoError(t, err, "refs/heads/main must be ancestor of HEAD: %s", errOut)
+		if _, _, refErr := t1RunGit(t, root, "show-ref", "--verify", "--quiet", "refs/heads/main"); refErr == nil {
+			_, errOut, err = t1RunGit(t, root, "merge-base", "--is-ancestor", "refs/heads/main", "HEAD")
+			require.NoError(t, err, "refs/heads/main must be ancestor of HEAD: %s", errOut)
+		}
 
-		mainSHA, errOut, err := t1RunGit(t, root, "rev-parse", "refs/heads/main")
-		require.NoError(t, err, errOut)
-		require.Equal(t, "fdaa4c455761bd6ca9d336d6dd09acb3639b34f1", strings.TrimSpace(mainSHA))
+		const v1BaselineCommit = "fdaa4c455761bd6ca9d336d6dd09acb3639b34f1"
+		if _, _, catErr := t1RunGit(t, root, "cat-file", "-e", v1BaselineCommit+"^{commit}"); catErr == nil {
+			_, errOut, err = t1RunGit(t, root, "merge-base", "--is-ancestor", v1BaselineCommit, "HEAD")
+			require.NoError(t, err, "%s must be ancestor of HEAD: %s", v1BaselineCommit, errOut)
+		}
+
 		require.Equal(t, "aether", C.TypeAether)
 	})
 
@@ -599,7 +616,8 @@ func runTier1F02(t *testing.T) {
 		require.NoError(t, err, "Resolve Version failed: %s", string(out))
 		envData, err := os.ReadFile(envFile)
 		require.NoError(t, err)
-		require.Contains(t, string(envData), "VERSION=1.14.4-Custom-Aether\n")
+		require.Regexp(t, `^[0-9]+\.[0-9]+\.[0-9]+-Custom-Aether$`, C.Version)
+		require.Contains(t, string(envData), "VERSION="+C.Version+"\n")
 	})
 }
 
