@@ -3,6 +3,7 @@ package aether
 import (
 	"context"
 	"net"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
@@ -22,6 +23,8 @@ func RegisterInbound(registry *inbound.Registry) {
 	inbound.Register[option.AetherInboundOptions](registry, C.TypeAether, NewInbound)
 }
 
+var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
+
 type Inbound struct {
 	inbound.Adapter
 	router               adapter.ConnectionRouterEx
@@ -33,11 +36,25 @@ type Inbound struct {
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AetherInboundOptions) (adapter.Inbound, error) {
-	psk := KeyFromPassword(options.Password)
-	timeLimit := options.TimeLimitMs
+	secret, err := option.ResolveSecret(options.Password, options.Key)
+	if err != nil {
+		return nil, err
+	}
+	for _, user := range options.Users {
+		userSecret, userErr := option.ResolveSecret(user.Password, user.Key)
+		if userErr != nil {
+			return nil, userErr
+		}
+		if secret == "" && userSecret != "" {
+			secret = userSecret
+		}
+	}
+	psk := KeyFromPassword(secret)
+	timeLimit := options.TimeWindow.Build().Milliseconds()
 	if timeLimit <= 0 {
 		timeLimit = MaxTimeDiffMs
 	}
+	heartbeatIntervalSec := int(options.HeartbeatInterval.Build() / time.Second)
 
 	baseRouter := uot.NewRouter(router, logger)
 	muxRouter, err := mux.NewRouterWithOptions(baseRouter, logger, common.PtrValueOrDefault(options.Multiplex))
@@ -51,7 +68,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:               logger,
 		psk:                  psk,
 		replayFilter:         NewReplayFilter(10000, timeLimit),
-		heartbeatIntervalSec: options.HeartbeatIntervalSec,
+		heartbeatIntervalSec: heartbeatIntervalSec,
 	}
 
 	in.listener = listener.New(listener.Options{
@@ -65,15 +82,20 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	return in, nil
 }
 
-func (in *Inbound) Start(stage adapter.StartStage) error {
+func (in *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
-	return in.listener.Start()
+	err := in.listener.Start()
+	if err != nil {
+		return err
+	}
+	scope.Add(in.listener.Close)
+	return nil
 }
 
 func (in *Inbound) Close() error {
-	return in.listener.Close()
+	return common.Close(common.PtrOrNil(in.listener))
 }
 
 func (in *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {

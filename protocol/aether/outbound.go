@@ -3,6 +3,7 @@ package aether
 import (
 	"context"
 	"net"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -22,6 +23,14 @@ import (
 func RegisterOutbound(registry *outbound.Registry) {
 	outbound.Register[option.AetherOutboundOptions](registry, C.TypeAether, NewOutbound)
 }
+
+var (
+	_ adapter.Outbound                = (*Outbound)(nil)
+	_ adapter.Lifecycle               = (*Outbound)(nil)
+	_ adapter.OutboundWithMultiplex   = (*Outbound)(nil)
+	_ adapter.InterfaceUpdateListener = (*Outbound)(nil)
+	_ adapter.IdleConnectionKeeper    = (*Outbound)(nil)
+)
 
 type Outbound struct {
 	outbound.Adapter
@@ -45,6 +54,15 @@ func (d *aetherDialer) ListenPacket(ctx context.Context, destination M.Socksaddr
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.AetherOutboundOptions) (adapter.Outbound, error) {
+	secret, err := option.ResolveSecret(options.Password, options.Key)
+	if err != nil {
+		return nil, err
+	}
+	switch options.Cipher {
+	case "", "auto", "aes-256-gcm", "chacha20-poly1305":
+	default:
+		return nil, E.New("unsupported aether cipher: ", options.Cipher)
+	}
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, options.ServerIsDomain())
 	if err != nil {
 		return nil, err
@@ -55,8 +73,8 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		logger:               logger,
 		dialer:               outboundDialer,
 		serverAddr:           options.ServerOptions.Build(),
-		psk:                  KeyFromPassword(options.Password),
-		heartbeatIntervalSec: options.HeartbeatIntervalSec,
+		psk:                  KeyFromPassword(secret),
+		heartbeatIntervalSec: int(options.HeartbeatInterval.Build() / time.Second),
 	}
 
 	uotOptions := common.PtrValueOrDefault(options.UDPOverTCP)
@@ -75,6 +93,42 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 
 	return out, nil
+}
+
+func (out *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateInitialize {
+		return nil
+	}
+	if out.multiplexDialer != nil {
+		scope.Add(out.multiplexDialer.Close)
+	}
+	return nil
+}
+
+func (out *Outbound) MultiplexEnabled() bool {
+	return out.multiplexDialer != nil
+}
+
+func (out *Outbound) InterfaceUpdated(ctx context.Context) {
+	if out.multiplexDialer != nil {
+		out.multiplexDialer.Reset()
+	}
+}
+
+func (out *Outbound) SetKeepIdleConnections(keep bool) {
+	if out.multiplexDialer != nil {
+		out.multiplexDialer.SetKeepIdleConnections(keep)
+	}
+}
+
+func (out *Outbound) CloseIdleConnections() {
+	if out.multiplexDialer != nil {
+		out.multiplexDialer.CloseIdleConnections()
+	}
+}
+
+func (out *Outbound) Close() error {
+	return common.Close(common.PtrOrNil(out.multiplexDialer))
 }
 
 func (out *Outbound) dial(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
