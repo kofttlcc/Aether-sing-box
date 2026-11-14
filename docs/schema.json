@@ -280,6 +280,21 @@
         }
       ]
     },
+    "AetherUser": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "AnyTLSUser": {
       "type": "object",
       "properties": {
@@ -5731,6 +5746,106 @@
           "type": "object",
           "properties": {
             "type": {
+              "const": "aether"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "listen": {
+              "type": "string"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "bind_interface": {
+              "type": "string"
+            },
+            "routing_mark": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "reuse_addr": {
+              "type": "boolean"
+            },
+            "netns": {
+              "type": "string",
+              "x-tag-reference": "network_namespace"
+            },
+            "disable_tcp_keep_alive": {
+              "type": "boolean"
+            },
+            "tcp_keep_alive": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_keep_alive_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_fast_open": {
+              "type": "boolean"
+            },
+            "tcp_multi_path": {
+              "type": "boolean"
+            },
+            "udp_fragment": {
+              "type": "boolean"
+            },
+            "udp_timeout": {
+              "$ref": "#/$defs/UDPTimeout"
+            },
+            "detour": {
+              "type": "string",
+              "x-tag-reference": "inbound"
+            },
+            "password": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "users": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AetherUser"
+              }
+            },
+            "private_key": {
+              "type": "string"
+            },
+            "time_window": {
+              "$ref": "#/$defs/Duration"
+            },
+            "handshake_timeout": {
+              "$ref": "#/$defs/Duration"
+            },
+            "heartbeat_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "disable_shaping": {
+              "type": "boolean"
+            },
+            "multiplex": {
+              "$ref": "#/$defs/InboundMultiplexOptions"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
               "const": "anytls"
             },
             "tag": {
@@ -10721,6 +10836,200 @@
     },
     "Outbound": {
       "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "aether"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "detour": {
+              "type": "string",
+              "x-tag-reference": "outbound"
+            },
+            "bind_interface": {
+              "type": "string"
+            },
+            "inet4_bind_address": {
+              "type": "string"
+            },
+            "inet6_bind_address": {
+              "type": "string"
+            },
+            "bind_address_no_port": {
+              "type": "boolean"
+            },
+            "protect_path": {
+              "type": "string"
+            },
+            "routing_mark": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "reuse_addr": {
+              "type": "boolean"
+            },
+            "netns": {
+              "type": "string",
+              "x-tag-reference": "network_namespace"
+            },
+            "connect_timeout": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_fast_open": {
+              "type": "boolean"
+            },
+            "tcp_multi_path": {
+              "type": "boolean"
+            },
+            "disable_tcp_keep_alive": {
+              "type": "boolean"
+            },
+            "tcp_keep_alive": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_keep_alive_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "udp_fragment": {
+              "type": "boolean"
+            },
+            "domain_resolver": {
+              "$ref": "#/$defs/DomainResolver"
+            },
+            "network_strategy": {
+              "type": "string",
+              "enum": [
+                "default",
+                "fallback",
+                "hybrid"
+              ]
+            },
+            "network_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InterfaceType"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/InterfaceType"
+                  }
+                }
+              ]
+            },
+            "fallback_network_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InterfaceType"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/InterfaceType"
+                  }
+                }
+              ]
+            },
+            "fallback_delay": {
+              "$ref": "#/$defs/Duration"
+            },
+            "server": {
+              "type": "string"
+            },
+            "server_port": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "network": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "tcp",
+                    "udp"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "tcp",
+                      "udp"
+                    ]
+                  }
+                }
+              ]
+            },
+            "password": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "cipher": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "aes-256-gcm",
+                "chacha20-poly1305"
+              ]
+            },
+            "public_key": {
+              "type": "string"
+            },
+            "heartbeat_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "disable_shaping": {
+              "type": "boolean"
+            },
+            "multiplex": {
+              "$ref": "#/$defs/OutboundMultiplexOptions"
+            },
+            "udp_over_tcp": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "enum": [
+                        1,
+                        2
+                      ],
+                      "minimum": 0,
+                      "maximum": 255
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "properties": {

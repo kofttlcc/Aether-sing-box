@@ -1,0 +1,318 @@
+name: Upstream Sync and Release
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-release:
+    name: Sync Upstream and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
+      - name: Discover Latest Upstream Stable Release
+        id: discover
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API_URL="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+          if [ -n "${GH_TOKEN:-}" ] && [ "${GH_TOKEN}" != "GHA_PLACEHOLDER" ]; then
+            RELEASE_JSON="$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "${API_URL}")"
+          else
+            RELEASE_JSON="$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              "${API_URL}")"
+          fi
+
+          printf '%s' "${RELEASE_JSON}" | jq -e '
+            type == "object"
+            and (.tag_name | type == "string" and length > 0)
+            and (.draft | type == "boolean")
+            and (.prerelease | type == "boolean")
+          ' >/dev/null
+
+          IS_DRAFT="$(printf '%s' "${RELEASE_JSON}" | jq -r '.draft')"
+          IS_PRERELEASE="$(printf '%s' "${RELEASE_JSON}" | jq -r '.prerelease')"
+          UPSTREAM_TAG="$(printf '%s' "${RELEASE_JSON}" | jq -r '.tag_name')"
+
+          if [ "${IS_DRAFT}" != "false" ] || [ "${IS_PRERELEASE}" != "false" ]; then
+            echo "Skipping upstream release ${UPSTREAM_TAG}: draft=${IS_DRAFT}, prerelease=${IS_PRERELEASE}"
+            echo "should_sync=false" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "SHOULD_SYNC=false" >> "${GITHUB_ENV:-/dev/null}"
+            exit 0
+          fi
+
+          if ! [[ "${UPSTREAM_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Skipping non-stable upstream tag ${UPSTREAM_TAG}: must match ^v[0-9]+\.[0-9]+\.[0-9]+$"
+            echo "should_sync=false" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "SHOULD_SYNC=false" >> "${GITHUB_ENV:-/dev/null}"
+            exit 0
+          fi
+
+          UPSTREAM_VER="${UPSTREAM_TAG#v}"
+          RELEASE_TAG="${UPSTREAM_TAG}-Custom-Aether"
+
+          echo "UPSTREAM_TAG=${UPSTREAM_TAG}" >> "${GITHUB_ENV:-/dev/null}"
+          echo "UPSTREAM_VER=${UPSTREAM_VER}" >> "${GITHUB_ENV:-/dev/null}"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV:-/dev/null}"
+          echo "upstream_tag=${UPSTREAM_TAG}" >> "${GITHUB_OUTPUT:-/dev/null}"
+          echo "upstream_ver=${UPSTREAM_VER}" >> "${GITHUB_OUTPUT:-/dev/null}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT:-/dev/null}"
+          echo "should_sync=true" >> "${GITHUB_OUTPUT:-/dev/null}"
+          echo "SHOULD_SYNC=true" >> "${GITHUB_ENV:-/dev/null}"
+          echo "Discovered upstream stable release: ${UPSTREAM_TAG} -> ${RELEASE_TAG}"
+
+      - name: Fetch Upstream Tag and Check Idempotency
+        id: idempotency
+        if: steps.discover.outputs.should_sync == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
+          if ! git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}^{commit}" >/dev/null 2>&1; then
+            if ! git remote get-url upstream >/dev/null 2>&1; then
+              git remote add upstream https://github.com/SagerNet/sing-box.git
+            fi
+            git fetch --no-tags --force upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+          fi
+
+          IS_ANCESTOR=false
+          if git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}^{commit}" HEAD >/dev/null 2>&1; then
+            IS_ANCESTOR=true
+          fi
+
+          RELEASE_EXISTS=false
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+          elif git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+          elif command -v gh >/dev/null 2>&1 && gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
+          fi
+
+          if [ "${IS_ANCESTOR}" = "true" ] && [ "${RELEASE_EXISTS}" = "true" ]; then
+            echo "Already synced and released: ${UPSTREAM_TAG} is ancestor of HEAD and ${RELEASE_TAG} exists."
+            echo "should_proceed=false" >> "${GITHUB_OUTPUT:-/dev/null}"
+            echo "SHOULD_PROCEED=false" >> "${GITHUB_ENV:-/dev/null}"
+            exit 0
+          fi
+
+          echo "Proceeding with sync and release for ${UPSTREAM_TAG} (ancestor=${IS_ANCESTOR}, release_exists=${RELEASE_EXISTS})."
+          echo "should_proceed=true" >> "${GITHUB_OUTPUT:-/dev/null}"
+          echo "SHOULD_PROCEED=true" >> "${GITHUB_ENV:-/dev/null}"
+
+      - name: Merge Upstream Tag and Preserve Workflows
+        if: steps.idempotency.outputs.should_proceed == 'true'
+        run: |
+          set -euo pipefail
+          if ! git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}^{commit}" >/dev/null 2>&1; then
+            if ! git remote get-url upstream >/dev/null 2>&1; then
+              git remote add upstream https://github.com/SagerNet/sing-box.git
+            fi
+            git fetch --no-tags --force upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+          fi
+
+          IS_ANCESTOR=false
+          if git merge-base --is-ancestor "refs/tags/${UPSTREAM_TAG}^{commit}" HEAD >/dev/null 2>&1; then
+            IS_ANCESTOR=true
+          fi
+
+          if [ "${IS_ANCESTOR}" != "true" ]; then
+            git merge --no-commit --no-ff "refs/tags/${UPSTREAM_TAG}" || true
+
+            # Always preserve fork .github/workflows/ identically to pre-merge HEAD
+            # (prevents merge conflicts and GITHUB_TOKEN workflows-scope push rejection).
+            git reset -q HEAD -- .github/workflows/ 2>/dev/null || true
+            if git ls-tree -r --name-only HEAD -- .github/workflows/ | grep -q .; then
+              git checkout HEAD -- .github/workflows/
+            fi
+            git clean -fd .github/workflows/ 2>/dev/null || true
+
+            # Resolve docs/schema.json conflict in favor of HEAD before regeneration.
+            if [ -n "$(git diff --name-only --diff-filter=U -- docs/schema.json)" ]; then
+              if git cat-file -e HEAD:docs/schema.json >/dev/null 2>&1; then
+                git checkout HEAD -- docs/schema.json
+              else
+                git checkout --theirs -- docs/schema.json
+              fi
+            fi
+
+            # Resolve constant/version.go conflict in favor of HEAD before setting target version.
+            if [ -n "$(git diff --name-only --diff-filter=U -- constant/version.go)" ]; then
+              if git cat-file -e HEAD:constant/version.go >/dev/null 2>&1; then
+                git checkout HEAD -- constant/version.go
+              else
+                git checkout --theirs -- constant/version.go
+              fi
+            fi
+
+            UNMERGED="$(git diff --name-only --diff-filter=U)"
+            if [ -n "${UNMERGED}" ]; then
+              echo "::error::Unresolved merge conflicts in source files:"
+              printf '%s\n' "${UNMERGED}"
+              git merge --abort || true
+              exit 1
+            fi
+
+            if ! git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+              echo "::error::git merge did not enter a merge state for ${UPSTREAM_TAG}"
+              exit 1
+            fi
+          fi
+
+          WORKFLOW_DIFF="$(git diff HEAD --name-only -- .github/workflows/)"
+          WORKFLOW_CACHED_DIFF="$(git diff --cached HEAD --name-only -- .github/workflows/)"
+          if [ -n "${WORKFLOW_DIFF}" ] || [ -n "${WORKFLOW_CACHED_DIFF}" ]; then
+            echo "::error::Unexpected diff in .github/workflows/ after preservation:"
+            printf '%s\n%s\n' "${WORKFLOW_DIFF}" "${WORKFLOW_CACHED_DIFF}"
+            git merge --abort || true
+            exit 1
+          fi
+
+      - name: Update Version and Regenerate Schema
+        if: steps.idempotency.outputs.should_proceed == 'true'
+        run: |
+          set -euo pipefail
+          UPSTREAM_VER="${UPSTREAM_TAG#v}"
+          CUSTOM_VERSION="${UPSTREAM_VER}-Custom-Aether"
+
+          if [ -f constant/version.go ]; then
+            sed "s/^var Version = \".*\"/var Version = \"${CUSTOM_VERSION}\"/" constant/version.go > constant/version.go.tmp
+            mv constant/version.go.tmp constant/version.go
+          else
+            mkdir -p constant
+            printf 'package constant\n\nvar Version = "%s"\n' "${CUSTOM_VERSION}" > constant/version.go
+          fi
+
+          if ! grep -q "var Version = \"${CUSTOM_VERSION}\"" constant/version.go; then
+            echo "::error::Failed to update constant/version.go to ${CUSTOM_VERSION}"
+            git merge --abort || true
+            exit 1
+          fi
+
+          if [ -f cmd/sing-box/cmd_schema.go ]; then
+            LDFLAGS_SHARED=""
+            if [ -f release/LDFLAGS ]; then
+              LDFLAGS_SHARED="$(cat release/LDFLAGS)"
+            fi
+            mkdir -p docs
+            go run \
+              -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,badlinkname,tfogo_checklinkname0" \
+              -ldflags "${LDFLAGS_SHARED}" \
+              ./cmd/sing-box schema > docs/schema.json.tmp
+            if [ -s docs/schema.json.tmp ]; then
+              mv docs/schema.json.tmp docs/schema.json
+            else
+              rm -f docs/schema.json.tmp
+            fi
+          fi
+
+      - name: Run Mandatory -race Test Gate
+        if: steps.idempotency.outputs.should_proceed == 'true'
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/...
+
+      - name: Build and Package Multi-Arch Static Binaries
+        if: steps.idempotency.outputs.should_proceed == 'true'
+        run: |
+          set -euo pipefail
+          UPSTREAM_VER="${UPSTREAM_TAG#v}"
+          CUSTOM_VERSION="${UPSTREAM_VER}-Custom-Aether"
+          LDFLAGS_SHARED=""
+          if [ -f release/LDFLAGS ]; then
+            LDFLAGS_SHARED="$(cat release/LDFLAGS)"
+          fi
+
+          rm -rf dist
+          mkdir -p dist
+
+          for ARCH in amd64 arm64; do
+            PKG_NAME="sing-box-${CUSTOM_VERSION}-linux-${ARCH}"
+            PKG_DIR="dist/${PKG_NAME}"
+            mkdir -p "${PKG_DIR}"
+
+            CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" \
+              go build -v -trimpath \
+                -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,badlinkname,tfogo_checklinkname0" \
+                -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${UPSTREAM_VER}-Custom-Aether' ${LDFLAGS_SHARED} -s -w -buildid=" \
+                -o "${PKG_DIR}/sing-box" ./cmd/sing-box
+
+            if [ -f LICENSE ]; then
+              cp LICENSE "${PKG_DIR}/LICENSE"
+            fi
+            tar -czf "dist/${PKG_NAME}.tar.gz" -C dist "${PKG_NAME}"
+            rm -rf "${PKG_DIR}"
+          done
+
+          (
+            cd dist
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum *.tar.gz > SHA256SUMS
+            else
+              shasum -a 256 *.tar.gz > SHA256SUMS
+            fi
+          )
+
+      - name: Commit Sync, Tag, Push, and Publish GitHub Release
+        if: steps.idempotency.outputs.should_proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
+          if ! git config user.name >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+          fi
+          if ! git config user.email >/dev/null 2>&1; then
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fi
+
+          # Final guard ensuring .github/workflows/ has zero diff against pre-merge HEAD.
+          git reset -q HEAD -- .github/workflows/ 2>/dev/null || true
+          if git ls-tree -r --name-only HEAD -- .github/workflows/ | grep -q .; then
+            git checkout HEAD -- .github/workflows/
+          fi
+          git clean -fd .github/workflows/ 2>/dev/null || true
+
+          git add -A -- ':!dist'
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || ! git diff --cached --quiet; then
+            git commit -m "chore(sync): merge upstream sing-box ${UPSTREAM_TAG}"
+          fi
+
+          TARGET_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo "${GITHUB_REF_NAME:-main}")"
+          if ! git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            git tag -a "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
+          fi
+
+          git push origin "HEAD:${TARGET_BRANCH}" "refs/tags/${RELEASE_TAG}"
+
+          gh release create "${RELEASE_TAG}" \
+            dist/*.tar.gz \
+            dist/SHA256SUMS \
+            --title "Aether-sing-box ${RELEASE_TAG}" \
+            --notes "Automated upstream sync with SagerNet/sing-box ${UPSTREAM_TAG} (passed CGO_ENABLED=1 -race test gate)."
+          rm -rf dist
