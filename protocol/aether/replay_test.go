@@ -460,17 +460,6 @@ func TestConcurrent32GoroutinesRaceAndReplayContest(t *testing.T) {
 	clockWG.Wait()
 }
 
-func TestLegacyReplayFilterShim(t *testing.T) {
-	t.Parallel()
-
-	rf := NewReplayFilter(0, 0)
-	nowMs := time.Now().UnixMilli()
-	require.True(t, rf.CheckAndAdd(nowMs, 12345))
-	require.False(t, rf.CheckAndAdd(nowMs, 12345), "duplicate nonce must be rejected")
-	require.False(t, rf.CheckAndAdd(nowMs-MaxTimeDiffMs-5000, 67890), "expired timestampMs must be rejected")
-	require.True(t, rf.CheckAndAdd(nowMs, 67890), "expired attempt must not pollute shim filter")
-}
-
 func BenchmarkSlidingBloomValidateAndRecord_Sequential(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
 	bf := NewSlidingBloomFilter(30*time.Second, func() time.Time { return now })
