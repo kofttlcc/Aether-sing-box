@@ -154,29 +154,68 @@
 
 ---
 
-## 五、環境注意事項與快速恢復指南（How to Resume）
+## 五、全量交接與技術藍圖文檔索引（已全數提交至本分支 `docs/aether/`）
 
-### 5.1 編譯與測試命令
-若在受限雲端沙盒環境（`proxy.golang.org` 返回 403 時），執行 Go 命令請帶上 `GOPROXY=direct GOSUMDB=off`：
+前期所有的架構設計、位元組契約、`sing-box v1.14.4` 內部 API 調研、M1/M2 密碼學與防重放藍圖、M3/M4 銜接施工手冊，以及完整的 E2E 端對端測試套件設計矩陣，均已整理並提交至本分支 `docs/aether/` 目錄下，同步到本機後可直接離線查閱或交由本機開發工具讀取：
+
+### 5.1 核心總綱文檔（`docs/aether/`）
+- [`AETHER_V2_HANDOFF.md`](./AETHER_V2_HANDOFF.md)：**本總交接手冊**（當前進度、已完成 API 速查、凍結契約與恢復指南）
+- [`AETHER_V2_DEVELOPMENT_PLAN.md`](./AETHER_V2_DEVELOPMENT_PLAN.md)：Aether v2（專線純淨版、剔除外層 TLS）協議規範與四階段開發計畫
+- [`AETHER_V1_SECURITY_AUDIT.md`](./AETHER_V1_SECURITY_AUDIT.md)：Aether v1 協議層 7 項安全漏洞（`S-1`～`S-7`）與 7 項可靠性缺陷（`R-1`～`R-7`）審計報告
+
+### 5.2 細部施工藍圖與測試規格集（`docs/aether/handoff/`）
+| 編號 | 文檔路徑 | 內容說明與用途 |
+| :---: | :--- | :--- |
+| `00` | [`handoff/00_PROJECT_CONTRACTS.md`](./handoff/00_PROJECT_CONTRACTS.md) | 全局架構、27 項功能清冊（`F1`–`F27`）、`M1`–`M6` 里程碑拆解、`U-1`–`U-15` 位元組契約與檔案佈局 |
+| `01` | [`handoff/01_SPEC_INVENTORY.md`](./handoff/01_SPEC_INVENTORY.md) | `AetherFlow-v2` 逐欄位規格盤點與邊界條件完整清冊 |
+| `02` | [`handoff/02_SINGBOX_V1144_API_SURVEY.md`](./handoff/02_SINGBOX_V1144_API_SURVEY.md) | `sing-box v1.14.4` 內部 Go API 調研（`Lifecycle`、`ExtendedConn`、`buf.Buffer` 所有權、`EarlyConn`、`mux`/`uot`） |
+| `03` | [`handoff/03_CI_AND_UPSTREAM_SYNC_SURVEY.md`](./handoff/03_CI_AND_UPSTREAM_SYNC_SURVEY.md) | 編譯 Tags 考證与 **M5（`upstream-sync-release.yml` 每週上游正式版自動同步打包 Action）** 設計細節與防坑指南 |
+| `04` | [`handoff/04_M1_IMPLEMENTATION_AND_AUDIT.md`](./handoff/04_M1_IMPLEMENTATION_AND_AUDIT.md) | M1（Phase 0）上游 `v1.14.4` 合併、CLI 金鑰生成與五重獨立審查通過紀錄 |
+| `05` | [`handoff/05_M2_CRYPTO_AND_KAT_BLUEPRINT.md`](./handoff/05_M2_CRYPTO_AND_KAT_BLUEPRINT.md) | M2 `crypto.go` 密碼學核心設計與 29 組獨立參考 KAT 測試向量規格 |
+| `06` | [`handoff/06_M2_BLOOM_REPLAY_BLUEPRINT.md`](./handoff/06_M2_BLOOM_REPLAY_BLUEPRINT.md) | M2 `replay.go` `1.00 MiB` 雙代滑動布隆過濾器數學推導與 NTP 時鐘回撥防禦規範 |
+| `07` | [`handoff/07_M3_M4_DOWNSTREAM_INTEGRATION_GUIDE.md`](./handoff/07_M3_M4_DOWNSTREAM_INTEGRATION_GUIDE.md) | **M3 / M4 必讀施工指南**：M2 密碼學/防重放對接 `wire.go`、`conn.go`、`inbound.go`、`outbound.go` 的零配置與安全邊界要點 |
+| `08` | [`handoff/08_E2E_TEST_MATRIX_TIERS_1_TO_4.md`](./handoff/08_E2E_TEST_MATRIX_TIERS_1_TO_4.md) | E2E 黑盒端對端測試套件（Tiers 1–4，涵蓋全部 27 項特性）完整測試案例規格表 |
+| `09` | [`handoff/09_E2E_BOX_WIRETAP_HARNESS_BLUEPRINT.md`](./handoff/09_E2E_BOX_WIRETAP_HARNESS_BLUEPRINT.md) | `protocol/aether/e2e/harness_test.go`（`box.Box` 實例啟停 + Wire-Tap 封包攔截器）實作藍圖 |
+| `10` | [`handoff/10_E2E_PACKET_AND_TIMING_ASSERTIONS.md`](./handoff/10_E2E_PACKET_AND_TIMING_ASSERTIONS.md) | 線上封包結構（零 `2-Byte` 分裂包、前 6 幀塑形、第 7 幀起 `<0.22%` 開銷、PCAP 驗證）與時序斷言規範 |
+
+---
+
+## 六、本機同步與接續開發指南（Local Machine Sync & Resume）
+
+### 6.1 同步分支到本機並驗證現有進度
+在本機終端機執行以下命令拉取 `dev/aether-v2` 分支（需要 Go `1.25.5+` / `1.26+` 環境，對應 `go.mod`）：
 
 ```bash
-# 1. 執行現有 M1 + M2 全量單元與競態測試（目前 100% 通過）
-GOPROXY=direct GOSUMDB=off go test -v -race ./cmd/sing-box/... ./protocol/aether/...
+# 1. 拉取遠端分支並切換至 dev/aether-v2
+git fetch origin
+git checkout -B dev/aether-v2 origin/dev/aether-v2
 
-# 2. 完整生產級二進位編譯驗證（含全部 sing-box v1.14.4 特性標籤）
-GOPROXY=direct GOSUMDB=off CGO_ENABLED=0 go build -trimpath \
+# 2. 本機執行現有 M1 + M2 全量單元與競態測試（應 100% 通過）
+go test -v -race ./cmd/sing-box/... ./protocol/aether/...
+
+# 3. 完整生產級二進位編譯驗證（本機 macOS / Linux 原生編譯，或加 GOOS=linux GOARCH=amd64 交叉編譯）
+CGO_ENABLED=0 go build -trimpath \
   -tags "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,badlinkname,tfogo_checklinkname0" \
   -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=1.14.4-Custom-Aether' $(cat release/LDFLAGS) -s -w -buildid=" \
-  -o /tmp/sing-box-bin ./cmd/sing-box
+  -o ./build/sing-box ./cmd/sing-box
+```
+> 註：若在部分受限網路環境遇到 `proxy.golang.org` 連線問題，可在 `go` 命令前加上 `GOPROXY=direct`（或本機慣用 Go Proxy）。
+
+### 6.2 第 5 階段（M5）每週上游同步 GitHub Action 實作要點提醒
+在實作 `.github/workflows/upstream-sync-release.yml` 時（詳見 [`handoff/03_CI_AND_UPSTREAM_SYNC_SURVEY.md`](./handoff/03_CI_AND_UPSTREAM_SYNC_SURVEY.md)）：
+1. **保護自訂 Workflows**：合併上游 `SagerNet/sing-box` 新正式版 Tag 時，確保本庫的 `.github/workflows/` 設定不被上游覆蓋，維持 `docker.yml` / `linux.yml` 的 `release:` 觸發器處於停用狀態。
+2. **單 Job 內閉環完成測試與發佈**：GitHub Actions 預設 `GITHUB_TOKEN` 推送新 Tag 不會二次觸發其他 Workflow，故「檢測 `SagerNet/sing-box/releases/latest` 正式版 -> 融合 Aether v2 -> 執行 `go test -race ./protocol/aether/...` -> 編譯二進位與 SHA256 -> 推送 Tag 並發佈 GitHub Release」應於同一工作流內完成；若遇合併衝突或測試失敗則自動建立 Issue / PR 通知維護者。
+3. **分支策略**：在完成全部驗收並準備正式切換前，所有提交請保持在 `dev/aether-v2` 分支（`main` 分支保持不動）。
+
+### 6.3 本機 AI 輔助工具接續開發提示詞（Prompt Template）
+若您在本機使用 AI 編碼助手繼續開發，可直接貼上以下提示詞無縫接軌：
+
+```text
+請先閱讀 docs/aether/AETHER_V2_HANDOFF.md、docs/aether/handoff/00_PROJECT_CONTRACTS.md 與 docs/aether/handoff/07_M3_M4_DOWNSTREAM_INTEGRATION_GUIDE.md。
+目前 M1（Phase 0）與 M2（Phase 1：crypto.go / replay.go）已完成並通過 go test -race。
+請在 dev/aether-v2 分支從里程碑 M3（Phase 2：實作 protocol/aether/wire.go、conn.go、packet.go 及單元測試）接著實施，隨後依序完成：
+- M4：實作 drain.go、重構 inbound.go / outbound.go、刪除 v1 舊檔（cipher.go、frame.go、noise.go、probe_guard.go 及 replay.go 尾部舊 ReplayFilter shim），並補齊 fuzz_test.go、stress_race_test.go、pcap_test.go（參考 docs/aether/handoff/02 與 10）；
+- M5：建立每週檢查 SagerNet/sing-box 正式版並自動拉取融合打包的 .github/workflows/upstream-sync-release.yml（參考 docs/aether/handoff/03）；
+- E2E 驗收：依照 docs/aether/handoff/08、09、10 完成 protocol/aether/e2e/ 端對端測試並通過 go test -race 全量驗證。
 ```
 
-### 5.2 第 5 階段（M5）每週上游同步 GitHub Action 實作要點提醒
-在實作 `.github/workflows/upstream-sync-release.yml` 時，請務必注意以下三點細節（已在前期 CI 調研中確認）：
-1. **保護自訂 Workflows**：合併上游 `SagerNet/sing-box` 新正式版 Tag 時，上游若修改 `.github/workflows/` 可能覆蓋或重啟 `docker.yml` / `linux.yml` 的觸發器，合併腳本需保留本庫的 `.github/workflows/` 設定或自動校驗 `release:` 觸發器保持停用。
-2. **單 Job 內完成發佈**：GitHub Actions 使用預設 `GITHUB_TOKEN` 推送新 Tag 時不會觸發另一個獨立 Workflow，因此「拉取上游正式版 -> 融合 Aether v2 -> 執行 `go test -race ./protocol/aether/...` -> 編譯二進位與 SHA256 -> 建立 Tag 並發佈 GitHub Release」應在 `upstream-sync-release.yml` 同一條工作流內閉環完成；若合併衝突或測試失敗則自動建立 Issue / PR 告警並中止發佈。
-3. **分支策略**：在用戶明確指示將 `dev/aether-v2` 合入 `main` 前，所有開發提交均保持在 `dev/aether-v2` 分支。
-
-### 5.3 下次恢復開發的建議指令
-下次繼續任務時，可直接發送以下提示詞（單代理直接實作或使用 `/goal`、`/teamwork` 皆可）：
-
-> 請讀取 `dev/aether-v2` 分支上的 `docs/aether/AETHER_V2_HANDOFF.md` 與 `docs/aether/AETHER_V2_DEVELOPMENT_PLAN.md`，從 **里程碑 M3（Phase 2：`wire.go`、`conn.go`、`packet.go`）** 接著往下實施，依序完成 M3、M4（`drain.go`、`inbound.go`、`outbound.go`、清理 v1 舊檔及 Fuzz/Race/PCAP 測試）、M5（`upstream-sync-release.yml`）與 E2E 端對端測試驗收，全程保持在 `dev/aether-v2` 分支。
