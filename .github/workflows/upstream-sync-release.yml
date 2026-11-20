@@ -26,13 +26,6 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: Setup Go Environment
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          check-latest: true
-          cache: true
-
       - name: Discover Latest Upstream Stable Release
         id: discover
         env:
@@ -97,7 +90,10 @@ jobs:
         run: |
           set -euo pipefail
           UPSTREAM_REPO_URL="https://github.com/SagerNet/sing-box.git"
+          UPSTREAM_VER="${UPSTREAM_VER:-${UPSTREAM_TAG#v}}"
           RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
+          EXPECTED_AMD64="sing-box-${UPSTREAM_VER}-Custom-Aether-linux-amd64.tar.gz"
+          EXPECTED_ARM64="sing-box-${UPSTREAM_VER}-Custom-Aether-linux-arm64.tar.gz"
           if ! git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}^{commit}" >/dev/null 2>&1; then
             git fetch --no-tags --force "${UPSTREAM_REPO_URL}" "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
           fi
@@ -115,7 +111,11 @@ jobs:
           fi
           if command -v gh >/dev/null 2>&1; then
             if RELEASE_VIEW_OUT="$(gh release view "${RELEASE_TAG}" ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} --json isDraft,assets 2>/dev/null)"; then
-              if [ -z "${RELEASE_VIEW_OUT}" ] || printf '%s' "${RELEASE_VIEW_OUT}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
+              if [ -z "${RELEASE_VIEW_OUT}" ] || printf '%s' "${RELEASE_VIEW_OUT}" | jq -e \
+                --arg amd64 "${EXPECTED_AMD64}" \
+                --arg arm64 "${EXPECTED_ARM64}" \
+                '.isDraft == false and ((.assets // []) | map(.name) as $names | ($names | index($amd64) != null) and ($names | index($arm64) != null) and ($names | index("SHA256SUMS") != null))' \
+                >/dev/null 2>&1; then
                 RELEASE_EXISTS=true
               fi
             fi
@@ -202,6 +202,14 @@ jobs:
             exit 1
           fi
 
+      - name: Setup Go Environment
+        if: steps.idempotency.outputs.should_proceed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+          cache: true
+
       - name: Update Version and Regenerate Schema
         if: steps.idempotency.outputs.should_proceed == 'true'
         run: |
@@ -283,7 +291,7 @@ jobs:
                 -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${UPSTREAM_VER}-Custom-Aether' ${LDFLAGS_SHARED} -s -w -buildid=" \
                 -o "${PKG_DIR}/sing-box" ./cmd/sing-box
 
-            if [ "${ARCH}" = "amd64" ] && [ -x "${PKG_DIR}/sing-box" ]; then
+            if [ "${ARCH}" = "amd64" ] && [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && [ -x "${PKG_DIR}/sing-box" ]; then
               "${PKG_DIR}/sing-box" version
             fi
 
@@ -309,7 +317,10 @@ jobs:
           GH_TOKEN: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          UPSTREAM_VER="${UPSTREAM_VER:-${UPSTREAM_TAG#v}}"
           RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
+          EXPECTED_AMD64="sing-box-${UPSTREAM_VER}-Custom-Aether-linux-amd64.tar.gz"
+          EXPECTED_ARM64="sing-box-${UPSTREAM_VER}-Custom-Aether-linux-arm64.tar.gz"
           TARGET_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
           GH_REPO_ARGS=()
           if [ -n "${TARGET_REPO}" ]; then
@@ -344,38 +355,65 @@ jobs:
           HAS_PUBLISHED_RELEASE=false
           if EXISTING_RELEASE_OUT="$(gh release view "${RELEASE_TAG}" ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} --json isDraft,assets 2>/dev/null)"; then
             RELEASE_EXISTS_ON_GITHUB=true
-            if [ -z "${EXISTING_RELEASE_OUT}" ] || printf '%s' "${EXISTING_RELEASE_OUT}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
+            if [ -z "${EXISTING_RELEASE_OUT}" ] || printf '%s' "${EXISTING_RELEASE_OUT}" | jq -e \
+              --arg amd64 "${EXPECTED_AMD64}" \
+              --arg arm64 "${EXPECTED_ARM64}" \
+              '.isDraft == false and ((.assets // []) | map(.name) as $names | ($names | index($amd64) != null) and ($names | index($arm64) != null) and ($names | index("SHA256SUMS") != null))' \
+              >/dev/null 2>&1; then
               HAS_PUBLISHED_RELEASE=true
             fi
           fi
 
-          # Create or align annotated tag with HEAD (only move an existing orphaned tag when no published release exists).
-          FORCE_TAG_PUSH=false
+          # Inspect both local and remote tag state (catches remote-only or diverged orphaned tags).
+          LOCAL_TAG_COMMIT=""
           if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
-            if [ "${TAG_COMMIT}" != "${HEAD_SHA}" ]; then
-              if [ "${HAS_PUBLISHED_RELEASE}" = "true" ]; then
-                echo "::error::Published release ${RELEASE_TAG} already exists on ${TARGET_REPO:-origin} at ${TAG_COMMIT}; refusing to move tag to ${HEAD_SHA}"
-                exit 1
-              fi
-              git tag -fa "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
-              FORCE_TAG_PUSH=true
+            LOCAL_TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          fi
+          REMOTE_TAG_COMMIT=""
+          while IFS=$'\t' read -r sha ref; do
+            if [ "${ref}" = "refs/tags/${RELEASE_TAG}^{}" ]; then
+              REMOTE_TAG_COMMIT="${sha}"
+            elif [ "${ref}" = "refs/tags/${RELEASE_TAG}" ] && [ -z "${REMOTE_TAG_COMMIT}" ]; then
+              REMOTE_TAG_COMMIT="${sha}"
             fi
-          else
+          done < <(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" 2>/dev/null || true)
+
+          EXISTING_TAG_COMMIT="${REMOTE_TAG_COMMIT:-${LOCAL_TAG_COMMIT}}"
+          if [ "${HAS_PUBLISHED_RELEASE}" = "true" ] && [ -n "${EXISTING_TAG_COMMIT}" ] && [ "${EXISTING_TAG_COMMIT}" != "${HEAD_SHA}" ]; then
+            echo "::error::Published release ${RELEASE_TAG} already exists on ${TARGET_REPO:-origin} at ${EXISTING_TAG_COMMIT}; refusing to move tag to ${HEAD_SHA}"
+            exit 1
+          fi
+
+          # Create or align annotated tag with HEAD (only move an existing orphaned tag when no complete published release exists).
+          NEED_TAG_PUSH=true
+          FORCE_TAG_PUSH=false
+          if [ "${REMOTE_TAG_COMMIT}" = "${HEAD_SHA}" ]; then
+            NEED_TAG_PUSH=false
+          elif [ -n "${REMOTE_TAG_COMMIT}" ] && [ "${REMOTE_TAG_COMMIT}" != "${HEAD_SHA}" ]; then
+            git tag -fa "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
+            FORCE_TAG_PUSH=true
+          elif [ -n "${LOCAL_TAG_COMMIT}" ] && [ "${LOCAL_TAG_COMMIT}" != "${HEAD_SHA}" ]; then
+            git tag -fa "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
+            FORCE_TAG_PUSH=true
+          elif [ -z "${LOCAL_TAG_COMMIT}" ]; then
             git tag -a "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
           fi
 
           git push origin "HEAD:${TARGET_BRANCH}"
-          if [ "${FORCE_TAG_PUSH}" = "true" ]; then
-            git push --force origin "refs/tags/${RELEASE_TAG}"
-          else
-            git push origin "refs/tags/${RELEASE_TAG}"
+          if [ "${NEED_TAG_PUSH}" = "true" ]; then
+            if [ "${FORCE_TAG_PUSH}" = "true" ]; then
+              git push --force origin "refs/tags/${RELEASE_TAG}"
+            else
+              git push origin "refs/tags/${RELEASE_TAG}"
+            fi
           fi
 
           RELEASE_TITLE="Aether-sing-box ${RELEASE_TAG}"
           RELEASE_NOTES="Automated upstream sync with SagerNet/sing-box ${UPSTREAM_TAG} (passed CGO_ENABLED=1 -race test gate)."
 
-          if [ "${RELEASE_EXISTS_ON_GITHUB}" = "true" ]; then
+          if [ "${HAS_PUBLISHED_RELEASE}" = "true" ]; then
+            echo "Published release ${RELEASE_TAG} already contains all expected assets; skipping release modification."
+          elif [ "${RELEASE_EXISTS_ON_GITHUB}" = "true" ]; then
             gh release upload "${RELEASE_TAG}" \
               ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} \
               --clobber \

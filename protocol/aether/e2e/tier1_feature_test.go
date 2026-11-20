@@ -4671,6 +4671,217 @@ exit 0
 		require.GreaterOrEqual(t, raceIdx, 0)
 		require.Greater(t, buildIdx, raceIdx)
 	})
+
+	t.Run("T1-F26-06", func(t *testing.T) {
+		raw := t1ReadRepoFile(t, wfPath)
+		steps := t1ExtractWorkflowSteps(t, raw)
+
+		// Verify Setup Go Environment runs after Merge Upstream Tag (reads post-merge go.mod and skips no-op runs).
+		mergeIdx := -1
+		setupGoIdx := -1
+		for idx, st := range steps {
+			switch st.Name {
+			case "Merge Upstream Tag and Preserve Workflows":
+				mergeIdx = idx
+			case "Setup Go Environment":
+				setupGoIdx = idx
+			}
+		}
+		require.GreaterOrEqual(t, mergeIdx, 0)
+		require.Greater(t, setupGoIdx, mergeIdx, "Setup Go Environment must run after Merge Upstream Tag")
+
+		idemStep := stepByName(t, steps, "Fetch Upstream Tag and Check Idempotency").Run
+		commitStep := stepByName(t, steps, "Commit Sync, Tag, Push, and Publish GitHub Release").Run
+
+		// Case A: Partial release (1 of 3 expected assets) must NOT short-circuit idempotency and must repair via upload+edit.
+		{
+			root := t.TempDir()
+			originDir := filepath.Join(root, "origin.git")
+			workDir := filepath.Join(root, "work")
+			binDir := filepath.Join(root, "bin")
+			ghLog := filepath.Join(root, "gh.log")
+			require.NoError(t, os.MkdirAll(binDir, 0o755))
+			_, errOut, err := t1RunGit(t, root, "init", "--bare", "-b", "main", originDir)
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, root, "clone", originDir, workDir)
+			require.NoError(t, err, errOut)
+			_, _, _ = t1RunGit(t, workDir, "config", "user.name", "Test")
+			_, _, _ = t1RunGit(t, workDir, "config", "user.email", "test@example.com")
+			require.NoError(t, os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("v1\n"), 0o644))
+			_, errOut, err = t1RunGit(t, workDir, "add", ".")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, workDir, "commit", "-m", "c1")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, workDir, "tag", "v1.14.5")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, workDir, "push", "origin", "HEAD:main", "refs/tags/v1.14.5")
+			require.NoError(t, err, errOut)
+
+			ghShim := filepath.Join(binDir, "gh")
+			require.NoError(t, os.WriteFile(ghShim, []byte(fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "gh $*" >> %q
+if [ "${1:-}" = "release" ] && [ "${2:-}" = "view" ]; then
+  printf '{"isDraft":false,"assets":[{"name":"sing-box-1.14.5-Custom-Aether-linux-amd64.tar.gz"}]}\n'
+  exit 0
+fi
+exit 0
+`, ghLog)), 0o755))
+
+			outFile := filepath.Join(root, "out")
+			envFile := filepath.Join(root, "env")
+			require.NoError(t, os.WriteFile(outFile, nil, 0o600))
+			require.NoError(t, os.WriteFile(envFile, nil, 0o600))
+			envMap := map[string]string{
+				"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"UPSTREAM_TAG": "v1.14.5",
+				"UPSTREAM_VER": "1.14.5",
+				"RELEASE_TAG":  "v1.14.5-Custom-Aether",
+				"GH_REPO":      "kofttlcc/Aether-sing-box",
+			}
+			runStepScript(t, workDir, idemStep, envMap, outFile, envFile)
+			require.Equal(t, "true", parseKVFile(t, outFile)["should_proceed"], "partial release missing arm64/SHA256SUMS must proceed to repair")
+
+			require.NoError(t, os.MkdirAll(filepath.Join(workDir, "dist"), 0o755))
+			for _, f := range []string{"sing-box-1.14.5-Custom-Aether-linux-amd64.tar.gz", "sing-box-1.14.5-Custom-Aether-linux-arm64.tar.gz", "SHA256SUMS"} {
+				require.NoError(t, os.WriteFile(filepath.Join(workDir, "dist", f), []byte("ok\n"), 0o644))
+			}
+			runStepScript(t, workDir, commitStep, envMap, outFile, envFile)
+			logged, err := os.ReadFile(ghLog)
+			require.NoError(t, err)
+			require.Contains(t, string(logged), "gh release upload v1.14.5-Custom-Aether")
+			require.Contains(t, string(logged), "gh release edit v1.14.5-Custom-Aether")
+		}
+
+		// Case B: Remote-only orphaned tag at older commit is safely force-aligned and released.
+		{
+			root := t.TempDir()
+			originDir := filepath.Join(root, "origin.git")
+			seedDir := filepath.Join(root, "seed")
+			workDir := filepath.Join(root, "work")
+			binDir := filepath.Join(root, "bin")
+			ghLog := filepath.Join(root, "gh.log")
+			require.NoError(t, os.MkdirAll(binDir, 0o755))
+			_, errOut, err := t1RunGit(t, root, "init", "--bare", "-b", "main", originDir)
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, root, "clone", originDir, seedDir)
+			require.NoError(t, err, errOut)
+			_, _, _ = t1RunGit(t, seedDir, "config", "user.name", "Test")
+			_, _, _ = t1RunGit(t, seedDir, "config", "user.email", "test@example.com")
+			require.NoError(t, os.WriteFile(filepath.Join(seedDir, "a.txt"), []byte("c1\n"), 0o644))
+			_, errOut, err = t1RunGit(t, seedDir, "add", ".")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, seedDir, "commit", "-m", "c1")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, seedDir, "push", "origin", "HEAD:main")
+			require.NoError(t, err, errOut)
+
+			_, errOut, err = t1RunGit(t, root, "clone", originDir, workDir)
+			require.NoError(t, err, errOut)
+			_, _, _ = t1RunGit(t, workDir, "config", "user.name", "Test")
+			_, _, _ = t1RunGit(t, workDir, "config", "user.email", "test@example.com")
+
+			// Push orphaned tag to origin only (absent in workDir).
+			_, errOut, err = t1RunGit(t, seedDir, "tag", "-a", "v1.14.5-Custom-Aether", "-m", "orphaned")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, seedDir, "push", "origin", "refs/tags/v1.14.5-Custom-Aether")
+			require.NoError(t, err, errOut)
+
+			require.NoError(t, os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("c2\n"), 0o644))
+			require.NoError(t, os.MkdirAll(filepath.Join(workDir, "dist"), 0o755))
+			for _, f := range []string{"sing-box-1.14.5-Custom-Aether-linux-amd64.tar.gz", "sing-box-1.14.5-Custom-Aether-linux-arm64.tar.gz", "SHA256SUMS"} {
+				require.NoError(t, os.WriteFile(filepath.Join(workDir, "dist", f), []byte("ok\n"), 0o644))
+			}
+
+			ghShim := filepath.Join(binDir, "gh")
+			require.NoError(t, os.WriteFile(ghShim, []byte(fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "gh $*" >> %q
+if [ "${1:-}" = "release" ] && [ "${2:-}" = "view" ]; then exit 1; fi
+exit 0
+`, ghLog)), 0o755))
+
+			outFile := filepath.Join(root, "out")
+			envFile := filepath.Join(root, "env")
+			require.NoError(t, os.WriteFile(outFile, nil, 0o600))
+			require.NoError(t, os.WriteFile(envFile, nil, 0o600))
+			envMap := map[string]string{
+				"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"UPSTREAM_TAG": "v1.14.5",
+				"UPSTREAM_VER": "1.14.5",
+				"RELEASE_TAG":  "v1.14.5-Custom-Aether",
+				"GH_REPO":      "kofttlcc/Aether-sing-box",
+			}
+			runStepScript(t, workDir, commitStep, envMap, outFile, envFile)
+
+			headSHA, errOut, err := t1RunGit(t, workDir, "rev-parse", "HEAD")
+			require.NoError(t, err, errOut)
+			remoteTagCommit, errOut, err := t1RunGit(t, originDir, "rev-parse", "refs/tags/v1.14.5-Custom-Aether^{commit}")
+			require.NoError(t, err, errOut)
+			require.Equal(t, strings.TrimSpace(headSHA), strings.TrimSpace(remoteTagCommit))
+			logged, err := os.ReadFile(ghLog)
+			require.NoError(t, err)
+			require.Contains(t, string(logged), "gh release create v1.14.5-Custom-Aether")
+		}
+
+		// Case C: Already-published complete release must NEVER be overwritten via upload --clobber / edit.
+		{
+			root := t.TempDir()
+			originDir := filepath.Join(root, "origin.git")
+			workDir := filepath.Join(root, "work")
+			binDir := filepath.Join(root, "bin")
+			ghLog := filepath.Join(root, "gh.log")
+			require.NoError(t, os.MkdirAll(binDir, 0o755))
+			_, errOut, err := t1RunGit(t, root, "init", "--bare", "-b", "main", originDir)
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, root, "clone", originDir, workDir)
+			require.NoError(t, err, errOut)
+			_, _, _ = t1RunGit(t, workDir, "config", "user.name", "Test")
+			_, _, _ = t1RunGit(t, workDir, "config", "user.email", "test@example.com")
+			require.NoError(t, os.WriteFile(filepath.Join(workDir, "a.txt"), []byte("c1\n"), 0o644))
+			_, errOut, err = t1RunGit(t, workDir, "add", ".")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, workDir, "commit", "-m", "c1")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, workDir, "tag", "-a", "v1.14.5-Custom-Aether", "-m", "published")
+			require.NoError(t, err, errOut)
+			_, errOut, err = t1RunGit(t, workDir, "push", "origin", "HEAD:main", "refs/tags/v1.14.5-Custom-Aether")
+			require.NoError(t, err, errOut)
+			require.NoError(t, os.MkdirAll(filepath.Join(workDir, "dist"), 0o755))
+			for _, f := range []string{"sing-box-1.14.5-Custom-Aether-linux-amd64.tar.gz", "sing-box-1.14.5-Custom-Aether-linux-arm64.tar.gz", "SHA256SUMS"} {
+				require.NoError(t, os.WriteFile(filepath.Join(workDir, "dist", f), []byte("ok\n"), 0o644))
+			}
+
+			ghShim := filepath.Join(binDir, "gh")
+			require.NoError(t, os.WriteFile(ghShim, []byte(fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%%s\n' "gh $*" >> %q
+if [ "${1:-}" = "release" ] && [ "${2:-}" = "view" ]; then
+  printf '{"isDraft":false,"assets":[{"name":"sing-box-1.14.5-Custom-Aether-linux-amd64.tar.gz"},{"name":"sing-box-1.14.5-Custom-Aether-linux-arm64.tar.gz"},{"name":"SHA256SUMS"}]}\n'
+  exit 0
+fi
+exit 0
+`, ghLog)), 0o755))
+
+			outFile := filepath.Join(root, "out")
+			envFile := filepath.Join(root, "env")
+			require.NoError(t, os.WriteFile(outFile, nil, 0o600))
+			require.NoError(t, os.WriteFile(envFile, nil, 0o600))
+			envMap := map[string]string{
+				"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"UPSTREAM_TAG": "v1.14.5",
+				"UPSTREAM_VER": "1.14.5",
+				"RELEASE_TAG":  "v1.14.5-Custom-Aether",
+				"GH_REPO":      "kofttlcc/Aether-sing-box",
+			}
+			runStepScript(t, workDir, commitStep, envMap, outFile, envFile)
+			logged, err := os.ReadFile(ghLog)
+			require.NoError(t, err)
+			require.NotContains(t, string(logged), "gh release upload")
+			require.NotContains(t, string(logged), "gh release edit")
+			require.NotContains(t, string(logged), "gh release create")
+		}
+	})
 }
 
 // =============================================================================
