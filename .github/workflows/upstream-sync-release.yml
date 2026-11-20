@@ -8,11 +8,17 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: upstream-sync-release
+  cancel-in-progress: false
+
 jobs:
   sync-and-release:
     name: Sync Upstream and Release
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -90,12 +96,10 @@ jobs:
           GH_TOKEN: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          UPSTREAM_REPO_URL="https://github.com/SagerNet/sing-box.git"
           RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
           if ! git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}^{commit}" >/dev/null 2>&1; then
-            if ! git remote get-url upstream >/dev/null 2>&1; then
-              git remote add upstream https://github.com/SagerNet/sing-box.git
-            fi
-            git fetch --no-tags --force upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+            git fetch --no-tags --force "${UPSTREAM_REPO_URL}" "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
           fi
 
           IS_ANCESTOR=false
@@ -104,16 +108,20 @@ jobs:
           fi
 
           RELEASE_EXISTS=false
-          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+          TARGET_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
+          if command -v gh >/dev/null 2>&1 && [ -n "${TARGET_REPO}" ]; then
+            RELEASE_VIEW_JSON="$(gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" --json isDraft,assets 2>/dev/null || true)"
+            if [ -n "${RELEASE_VIEW_JSON}" ] && printf '%s' "${RELEASE_VIEW_JSON}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
+              RELEASE_EXISTS=true
+            fi
+          elif git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
             RELEASE_EXISTS=true
           elif git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            RELEASE_EXISTS=true
-          elif command -v gh >/dev/null 2>&1 && gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             RELEASE_EXISTS=true
           fi
 
           if [ "${IS_ANCESTOR}" = "true" ] && [ "${RELEASE_EXISTS}" = "true" ]; then
-            echo "Already synced and released: ${UPSTREAM_TAG} is ancestor of HEAD and ${RELEASE_TAG} exists."
+            echo "Already synced and released: ${UPSTREAM_TAG} is ancestor of HEAD and published release ${RELEASE_TAG} exists."
             echo "should_proceed=false" >> "${GITHUB_OUTPUT:-/dev/null}"
             echo "SHOULD_PROCEED=false" >> "${GITHUB_ENV:-/dev/null}"
             exit 0
@@ -127,11 +135,9 @@ jobs:
         if: steps.idempotency.outputs.should_proceed == 'true'
         run: |
           set -euo pipefail
+          UPSTREAM_REPO_URL="https://github.com/SagerNet/sing-box.git"
           if ! git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}^{commit}" >/dev/null 2>&1; then
-            if ! git remote get-url upstream >/dev/null 2>&1; then
-              git remote add upstream https://github.com/SagerNet/sing-box.git
-            fi
-            git fetch --no-tags --force upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+            git fetch --no-tags --force "${UPSTREAM_REPO_URL}" "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
           fi
 
           IS_ANCESTOR=false
@@ -272,6 +278,10 @@ jobs:
                 -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${UPSTREAM_VER}-Custom-Aether' ${LDFLAGS_SHARED} -s -w -buildid=" \
                 -o "${PKG_DIR}/sing-box" ./cmd/sing-box
 
+            if [ "${ARCH}" = "amd64" ]; then
+              "${PKG_DIR}/sing-box" version
+            fi
+
             if [ -f LICENSE ]; then
               cp LICENSE "${PKG_DIR}/LICENSE"
             fi
@@ -295,6 +305,12 @@ jobs:
         run: |
           set -euo pipefail
           RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
+          TARGET_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
+          if [ -z "${TARGET_REPO}" ]; then
+            echo "::error::Target repository (GH_REPO / GITHUB_REPOSITORY) is empty"
+            exit 1
+          fi
+
           if ! git config user.name >/dev/null 2>&1; then
             git config user.name "github-actions[bot]"
           fi
@@ -316,15 +332,59 @@ jobs:
           fi
 
           TARGET_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo "${GITHUB_REF_NAME:-main}")"
-          if ! git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+          HEAD_SHA="$(git rev-parse HEAD)"
+
+          # Detect existing GitHub Release (e.g., partial/draft release from an interrupted run).
+          EXISTING_RELEASE_JSON="$(gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" --json isDraft,assets 2>/dev/null || true)"
+          HAS_PUBLISHED_RELEASE=false
+          if [ -n "${EXISTING_RELEASE_JSON}" ] && printf '%s' "${EXISTING_RELEASE_JSON}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
+            HAS_PUBLISHED_RELEASE=true
+          fi
+
+          # Create or align annotated tag with HEAD (only move an existing orphaned tag when no published release exists).
+          FORCE_TAG_PUSH=false
+          if git rev-parse -q --verify "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+            if [ "${TAG_COMMIT}" != "${HEAD_SHA}" ]; then
+              if [ "${HAS_PUBLISHED_RELEASE}" = "true" ]; then
+                echo "::error::Published release ${RELEASE_TAG} already exists on ${TARGET_REPO} at ${TAG_COMMIT}; refusing to move tag to ${HEAD_SHA}"
+                exit 1
+              fi
+              git tag -fa "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
+              FORCE_TAG_PUSH=true
+            fi
+          else
             git tag -a "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
           fi
 
-          git push origin "HEAD:${TARGET_BRANCH}" "refs/tags/${RELEASE_TAG}"
+          git push origin "HEAD:${TARGET_BRANCH}"
+          if [ "${FORCE_TAG_PUSH}" = "true" ]; then
+            git push --force origin "refs/tags/${RELEASE_TAG}"
+          else
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
 
-          gh release create "${RELEASE_TAG}" \
-            dist/*.tar.gz \
-            dist/SHA256SUMS \
-            --title "Aether-sing-box ${RELEASE_TAG}" \
-            --notes "Automated upstream sync with SagerNet/sing-box ${UPSTREAM_TAG} (passed CGO_ENABLED=1 -race test gate)."
+          RELEASE_TITLE="Aether-sing-box ${RELEASE_TAG}"
+          RELEASE_NOTES="Automated upstream sync with SagerNet/sing-box ${UPSTREAM_TAG} (passed CGO_ENABLED=1 -race test gate)."
+
+          if [ -n "${EXISTING_RELEASE_JSON}" ]; then
+            gh release upload "${RELEASE_TAG}" \
+              --repo "${TARGET_REPO}" \
+              --clobber \
+              dist/*.tar.gz \
+              dist/SHA256SUMS
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${TARGET_REPO}" \
+              --draft=false \
+              --title "${RELEASE_TITLE}" \
+              --notes "${RELEASE_NOTES}"
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${TARGET_REPO}" \
+              --verify-tag \
+              dist/*.tar.gz \
+              dist/SHA256SUMS \
+              --title "${RELEASE_TITLE}" \
+              --notes "${RELEASE_NOTES}"
+          fi
           rm -rf dist
