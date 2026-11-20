@@ -3198,7 +3198,7 @@ func runTier1F20(t *testing.T) {
 			ServerHeartbeatInterval: "150ms", ClientHeartbeatInterval: "150ms",
 			WireTapWindowSize: 8192,
 		})
-		topo.Tap.SetThrottle(2*time.Millisecond, 4096)
+		topo.Tap.SetThrottle(500*time.Microsecond, 16384)
 
 		const size = 256 * 1024
 		payload := DeterministicBytes(2002, size)

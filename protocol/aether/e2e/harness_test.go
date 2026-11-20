@@ -1755,6 +1755,13 @@ func configureTapTCPConn(c net.Conn, bufBytes int) {
 		return
 	}
 	if tc, ok := c.(*net.TCPConn); ok {
+		if runtime.GOOS == "linux" && bufBytes < 131072 {
+			// Linux loopback (lo) has MTU=65536 (MSS=65483). Shrinking SO_RCVBUF/SO_SNDBUF
+			// below 2*MSS triggers RFC 1122 Silly Window Syndrome zero-window persist stalls
+			// (200ms->400ms->800ms) and 40ms delayed ACKs that collapse localhost throughput
+			// and starve sub-second DPD (500ms pongTimeout) behind kernel SO_SNDBUF queues.
+			bufBytes = 131072
+		}
 		_ = tc.SetReadBuffer(bufBytes)
 		_ = tc.SetWriteBuffer(bufBytes)
 	}

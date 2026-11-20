@@ -760,7 +760,7 @@ func testT307SmuxChaChaThrottled12Streams(t *testing.T) {
 		},
 	})
 	topo.Tap.SetTCPWindowBytes(16384)
-	topo.Tap.SetThrottle(1*time.Millisecond, 8192)
+	topo.Tap.SetThrottle(500*time.Microsecond, 16384)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 12; i++ {
