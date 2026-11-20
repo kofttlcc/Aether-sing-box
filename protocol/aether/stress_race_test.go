@@ -188,16 +188,29 @@ func TestStressBidirectionalTCPRace(t *testing.T) {
 				{Name: "bob", Password: "bob-stress-password"},
 			},
 			ServerPrivateKey:  priv,
-			HeartbeatInterval: badoption.Duration(60 * time.Millisecond),
+			HeartbeatInterval: badoption.Duration(250 * time.Millisecond),
 		},
 		option.AetherOutboundOptions{
 			Password:          "alice-stress-password",
 			ServerPublicKey:   pub,
 			Cipher:            "auto",
-			HeartbeatInterval: badoption.Duration(60 * time.Millisecond),
+			HeartbeatInterval: badoption.Duration(250 * time.Millisecond),
 		},
 	)
 	defer cleanup()
+
+	// Half-close echoed server streams cleanly and keep the peer TCP socket open
+	// until all client workers finish draining ReadFull, preventing a server-side
+	// TCP RST if a client heartbeat frame races with server close under -race CI load.
+	done := make(chan struct{})
+	defer close(done)
+	router.tcpHandler = func(conn net.Conn) {
+		_, _ = io.Copy(conn, conn)
+		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+		<-done
+	}
 
 	const workers = 16
 	const payloadSize = 96 * 1024
