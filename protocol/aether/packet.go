@@ -33,6 +33,8 @@ var (
 	_ N.WriterWithMTU      = (*ClientPacketConn)(nil)
 	_ N.ReaderWithUpstream = (*ClientPacketConn)(nil)
 	_ N.WriterWithUpstream = (*ClientPacketConn)(nil)
+	_ N.WithUpstreamReader = (*ClientPacketConn)(nil)
+	_ N.WithUpstreamWriter = (*ClientPacketConn)(nil)
 	_ common.WithUpstream  = (*ClientPacketConn)(nil)
 
 	_ N.PacketConn         = (*ServerPacketConn)(nil)
@@ -46,6 +48,8 @@ var (
 	_ N.WriterWithMTU      = (*ServerPacketConn)(nil)
 	_ N.ReaderWithUpstream = (*ServerPacketConn)(nil)
 	_ N.WriterWithUpstream = (*ServerPacketConn)(nil)
+	_ N.WithUpstreamReader = (*ServerPacketConn)(nil)
+	_ N.WithUpstreamWriter = (*ServerPacketConn)(nil)
 	_ common.WithUpstream  = (*ServerPacketConn)(nil)
 )
 
@@ -125,6 +129,14 @@ func (p *packetConnBase) WriterMTU() int {
 
 func (p *packetConnBase) Upstream() any {
 	return p.conn
+}
+
+func (p *packetConnBase) UpstreamReader() any {
+	return nil
+}
+
+func (p *packetConnBase) UpstreamWriter() any {
+	return nil
 }
 
 func (p *packetConnBase) ReaderReplaceable() bool {

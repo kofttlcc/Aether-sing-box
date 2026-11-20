@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"os"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"
@@ -2328,5 +2330,71 @@ func TestDataFrameAfterCloseWriteRejected(t *testing.T) {
 	n, rErr := cc.Read(extra)
 	if n != 0 || !errors.Is(rErr, io.EOF) {
 		t.Fatalf("post-EOF Read = (%d, %v), want (0, io.EOF)", n, rErr)
+	}
+}
+
+func TestPacketConnMTUIsolation(t *testing.T) {
+	env := newAetherTestEnv(t, false)
+	rawCli, rawSrv := tcpLoopbackPair(t)
+
+	cc, err := DialEarlyConn(rawCli, ClientConnOptions{
+		Credentials:       env.creds,
+		ServerStaticPub:   env.pub,
+		Command:           CommandUDP,
+		TargetAddr:        env.target,
+		HeartbeatInterval: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+
+	srvCh := make(chan *Conn, 1)
+	go func() {
+		res, accErr := AcceptServerConn(context.Background(), rawSrv, ServerConnOptions{
+			Authenticator:     env.auth,
+			ReplayFilter:      env.replay,
+			HeartbeatInterval: -1,
+		})
+		if accErr == nil && res != nil {
+			srvCh <- res.Conn
+		}
+	}()
+
+	if _, err := cc.Write([]byte("init-udp")); err != nil {
+		t.Fatal(err)
+	}
+	sc := <-srvCh
+	defer sc.Close()
+
+	cliPkt := NewClientPacketConn(cc)
+	srvPkt := NewServerPacketConn(sc)
+
+	if mtu := N.CalculateMTU(nil, srvPkt); mtu != math.MaxUint16 {
+		t.Fatalf("CalculateMTU(nil, srvPkt) = %d, want %d", mtu, math.MaxUint16)
+	}
+	if mtu := N.CalculateMTU(cliPkt, nil); mtu != math.MaxUint16 {
+		t.Fatalf("CalculateMTU(cliPkt, nil) = %d, want %d", mtu, math.MaxUint16)
+	}
+	if mtu := N.CalculateMTU(srvPkt, cliPkt); mtu != math.MaxUint16 {
+		t.Fatalf("CalculateMTU(srvPkt, cliPkt) = %d, want %d", mtu, math.MaxUint16)
+	}
+	if fh := N.CalculateFrontHeadroom(srvPkt); fh != 0 {
+		t.Fatalf("CalculateFrontHeadroom(srvPkt) = %d, want 0", fh)
+	}
+	if rh := N.CalculateRearHeadroom(srvPkt); rh != 0 {
+		t.Fatalf("CalculateRearHeadroom(srvPkt) = %d, want 0", rh)
+	}
+	if got, ok := common.Cast[*Conn](srvPkt); !ok || got != sc {
+		t.Fatalf("common.Cast[*Conn](srvPkt) = (%v, %v), want (%v, true)", got, ok, sc)
+	}
+	if got, ok := common.Cast[*Conn](cliPkt); !ok || got != cc {
+		t.Fatalf("common.Cast[*Conn](cliPkt) = (%v, %v), want (%v, true)", got, ok, cc)
+	}
+	if sc.WriterMTU() != MaxFrameDataSize {
+		t.Fatalf("sc.WriterMTU() = %d, want %d", sc.WriterMTU(), MaxFrameDataSize)
+	}
+	if cc.WriterMTU() != MaxFrameDataSize {
+		t.Fatalf("cc.WriterMTU() = %d, want %d", cc.WriterMTU(), MaxFrameDataSize)
 	}
 }

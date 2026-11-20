@@ -107,7 +107,9 @@ type Conn struct {
 	serverRespPrefix  [ServerRespPrefixSize]byte
 	serverRespPending atomic.Bool
 
-	// Write path state: app writes lock writeMu; writeMu -> initBurstMu / rawWriteMu.
+	// Write path state: app Write/CloseWrite lock appWriteMu; per-frame framing/crypto locks writeMu;
+	// order: appWriteMu -> initBurstMu / writeMu -> rawWriteMu.
+	appWriteMu        sync.Mutex
 	writeMu           sync.Mutex
 	rawWriteMu        sync.Mutex
 	sendCipher        *DirectionalCipher
@@ -970,8 +972,8 @@ func (c *Conn) Write(p []byte) (int, error) {
 		return 0, nil
 	}
 
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.appWriteMu.Lock()
+	defer c.appWriteMu.Unlock()
 
 	if c.closed.Load() || c.writeBroken.Load() || c.writeCloseSent.Load() {
 		return 0, net.ErrClosed
@@ -1010,7 +1012,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 			c.writeBroken.Store(true)
 			return totalWritten, os.ErrDeadlineExceeded
 		}
-		chunkLen, err := c.writeOneDataFrameLocked(remaining, dl)
+		chunkLen, err := c.writeOneDataFrame(remaining, dl)
 		if err != nil {
 			return totalWritten, err
 		}
@@ -1033,6 +1035,16 @@ func (c *Conn) WriteBuffer(buffer *buf.Buffer) error {
 	}
 	_, err := c.Write(buffer.Bytes())
 	return err
+}
+
+func (c *Conn) writeOneDataFrame(remaining []byte, deadline time.Time) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.closed.Load() || c.writeBroken.Load() || c.writeCloseSent.Load() {
+		return 0, net.ErrClosed
+	}
+	return c.writeOneDataFrameLocked(remaining, deadline)
 }
 
 func (c *Conn) writeOneDataFrameLocked(remaining []byte, deadline time.Time) (int, error) {
@@ -1115,8 +1127,8 @@ func (c *Conn) CloseWrite() error {
 		return net.ErrClosed
 	}
 
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.appWriteMu.Lock()
+	defer c.appWriteMu.Unlock()
 
 	if c.closed.Load() || c.writeBroken.Load() {
 		return net.ErrClosed
@@ -1136,6 +1148,16 @@ func (c *Conn) CloseWrite() error {
 		if err := c.awaitServerRespForWrite(ctrlDeadline); err != nil {
 			return err
 		}
+	}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if c.closed.Load() || c.writeBroken.Load() {
+		return net.ErrClosed
+	}
+	if c.writeCloseSent.Load() {
+		return nil
 	}
 
 	var padLen uint8

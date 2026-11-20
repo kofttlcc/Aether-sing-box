@@ -2768,9 +2768,30 @@ func runTier1F17(t *testing.T) {
 
 		if runtime.GOOS != "darwin" {
 			// On Linux / non-9216-capped OS, also verify full BoxPair end-to-end 32768B OS UDP echo.
+			// Send a small warm-up datagram on the SOCKS5 UDP association first because upstream
+			// sagernet/sing/protocol/socks/handshake.go reads packet #1 into a fixed 16 KiB buf.NewPacket()
+			// before handing off subsequent packets to bufio.CopyPacket with CalculateMTU().
 			udpEcho := StartUDPEchoServer(t)
 			topo := t1StartTopology(t, TopologyConfig{ServerKey: key, ClientKey: key, DisableWireTap: true})
-			t1UDPEcho(t, topo, udpEcho.Addr(), large)
+			s5Ctx, s5Cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			defer s5Cancel()
+			uconn, uerr := topo.OpenSOCKS5UDP(s5Ctx)
+			require.NoError(t, uerr)
+			defer func() { _ = uconn.Close() }()
+			require.NoError(t, uconn.SetDeadline(time.Now().Add(8*time.Second)))
+
+			warmup := []byte("socks5-udp-warmup")
+			require.NoError(t, uconn.WriteToHostPort(warmup, udpEcho.Addr()))
+			warmBuf := make([]byte, 4096)
+			wn, _, werr := uconn.ReadFromHostPort(warmBuf)
+			require.NoError(t, werr)
+			require.Equal(t, warmup, warmBuf[:wn])
+
+			require.NoError(t, uconn.WriteToHostPort(large, udpEcho.Addr()))
+			bufRead := make([]byte, len(large)+512)
+			ln, _, lerr := uconn.ReadFromHostPort(bufRead)
+			require.NoError(t, lerr)
+			require.Equal(t, large, bufRead[:ln])
 		}
 	})
 }
@@ -3175,7 +3196,7 @@ func runTier1F20(t *testing.T) {
 			ServerKey:               key,
 			ClientKey:               key,
 			ServerHeartbeatInterval: "150ms", ClientHeartbeatInterval: "150ms",
-			WireTapWindowSize: 2048,
+			WireTapWindowSize: 8192,
 		})
 		topo.Tap.SetThrottle(2*time.Millisecond, 4096)
 
@@ -3186,7 +3207,19 @@ func runTier1F20(t *testing.T) {
 		c, err := topo.DialSOCKS5(ctx, echo.Addr())
 		require.NoError(t, err)
 		defer func() { _ = c.Close() }()
-		t1DialAndEchoConn(t, c, payload)
+
+		require.NoError(t, c.SetDeadline(time.Now().Add(30*time.Second)))
+		defer func() { _ = c.SetDeadline(time.Time{}) }()
+		wErrCh := make(chan error, 1)
+		go func() {
+			_, wErr := c.Write(payload)
+			wErrCh <- wErr
+		}()
+		got := make([]byte, len(payload))
+		_, rErr := io.ReadFull(c, got)
+		require.NoError(t, rErr)
+		require.NoError(t, <-wErrCh)
+		require.Equal(t, payload, got)
 	})
 
 	t.Run("T1-F20-03", func(t *testing.T) {

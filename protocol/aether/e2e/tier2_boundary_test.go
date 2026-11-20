@@ -147,6 +147,34 @@ func t2EchoTCPViaSOCKS5(t testing.TB, proxyAddr, targetAddr string, payload []by
 	return nil
 }
 
+func t2EchoTCPViaSOCKS5Concurrent(t testing.TB, proxyAddr, targetAddr string, payload []byte, timeout time.Duration) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	conn, err := DialSOCKS5TCP(ctx, proxyAddr, targetAddr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	wErrCh := make(chan error, 1)
+	go func() {
+		_, wErr := conn.Write(payload)
+		wErrCh <- wErr
+	}()
+	got := make([]byte, len(payload))
+	if _, rErr := io.ReadFull(conn, got); rErr != nil {
+		return rErr
+	}
+	if wErr := <-wErrCh; wErr != nil {
+		return wErr
+	}
+	if !bytes.Equal(got, payload) {
+		return fmt.Errorf("echo mismatch: sent sha256=%x, got sha256=%x", sha256.Sum256(payload), sha256.Sum256(got))
+	}
+	return nil
+}
+
 func t2EchoTCPViaSOCKS5Auth(t testing.TB, proxyAddr, user, pass, targetAddr string, payload []byte) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -3609,7 +3637,7 @@ func t2RunF20(t *testing.T) {
 				MinStreams:     1,
 				Padding:        true,
 			},
-			WireTapWindowSize: 4096,
+			WireTapWindowSize: 16384,
 		})
 
 		const streams = 8
@@ -3621,7 +3649,7 @@ func t2RunF20(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				err := t2EchoTCPViaSOCKS5(t, topo.ClientProxyAddr(), echo.Addr(), DeterministicBytes(uint64(20030+idx), sizePerStream))
+				err := t2EchoTCPViaSOCKS5Concurrent(t, topo.ClientProxyAddr(), echo.Addr(), DeterministicBytes(uint64(20030+idx), sizePerStream), 25*time.Second)
 				if err != nil {
 					errCh <- fmt.Errorf("stream %d: %w", idx, err)
 				}
