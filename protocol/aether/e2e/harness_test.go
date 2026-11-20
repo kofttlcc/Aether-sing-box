@@ -56,8 +56,11 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// Default9BuildTags matches the production 9-tag release build matrix in PROJECT.md §1 and .github/workflows.
+// Default9BuildTags matches the legacy 9-tag subset previously used in CI workflows.
 const Default9BuildTags = "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,badlinkname,tfogo_checklinkname0"
+
+// DefaultOfficialPureGoBuildTags matches upstream's official pure-Go release build tags in release/DEFAULT_BUILD_TAGS_OTHERS.
+const DefaultOfficialPureGoBuildTags = "with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
 
 // FallbackMacGoPath is the darwin/arm64 fallback binary location when `go` is absent from PATH.
 const FallbackMacGoPath = "/Users/mac/.local/go/bin/go"
@@ -581,6 +584,16 @@ func ensureCLIBinaryBuilt() {
 			cliBuildErr = fmt.Errorf("read release/LDFLAGS: %w", err)
 			return
 		}
+		tagsBytes, err := os.ReadFile(filepath.Join(root, "release", "DEFAULT_BUILD_TAGS_OTHERS"))
+		if err != nil {
+			cliBuildErr = fmt.Errorf("read release/DEFAULT_BUILD_TAGS_OTHERS: %w", err)
+			return
+		}
+		buildTags := strings.TrimSpace(string(tagsBytes))
+		if buildTags == "" {
+			cliBuildErr = fmt.Errorf("release/DEFAULT_BUILD_TAGS_OTHERS is empty")
+			return
+		}
 		ldflags := fmt.Sprintf(
 			"-X 'github.com/sagernet/sing-box/constant.Version=%s' %s -s -w -buildid=",
 			C.Version,
@@ -589,7 +602,7 @@ func ensureCLIBinaryBuilt() {
 
 		cmd := exec.Command(
 			goBin, "build", "-trimpath",
-			"-tags", Default9BuildTags,
+			"-tags", buildTags,
 			"-ldflags", ldflags,
 			"-o", outBin,
 			"./cmd/sing-box",
@@ -598,8 +611,6 @@ func ensureCLIBinaryBuilt() {
 		cmd.Env = GoCommandEnv(
 			"CGO_ENABLED=0",
 			"GOTOOLCHAIN=local",
-			"GOPROXY=direct",
-			"GOSUMDB=off",
 		)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -611,7 +622,7 @@ func ensureCLIBinaryBuilt() {
 	})
 }
 
-// CLIBinaryPath returns the singleton pre-built 9-tag sing-box binary path.
+// CLIBinaryPath returns the singleton pre-built official pure-Go tag sing-box binary path.
 func CLIBinaryPath(t testing.TB) string {
 	t.Helper()
 	ensureCLIBinaryBuilt()
@@ -634,7 +645,7 @@ type CLIResult struct {
 	Err      error
 }
 
-// RunCLI executes the pre-built 9-tag sing-box CLI binary with args.
+// RunCLI executes the pre-built official pure-Go tag sing-box CLI binary with args.
 func RunCLI(t testing.TB, ctx context.Context, args ...string) CLIResult {
 	t.Helper()
 	if ctx == nil {

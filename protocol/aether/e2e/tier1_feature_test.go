@@ -404,9 +404,12 @@ func runTier1F01(t *testing.T) {
 		require.NoError(t, res.Err, "stderr=%s", res.Stderr)
 		require.Equal(t, 0, res.ExitCode)
 		require.Contains(t, res.Stdout, "sing-box version "+C.Version)
-		for _, tag := range strings.Split(Default9BuildTags, ",") {
+		officialTags := strings.TrimSpace(t1ReadRepoFile(t, "release/DEFAULT_BUILD_TAGS_OTHERS"))
+		require.NotEmpty(t, officialTags)
+		for _, tag := range strings.Split(officialTags, ",") {
 			require.Contains(t, res.Stdout, tag)
 		}
+		require.Contains(t, res.Stdout, "with_tailscale")
 		require.Contains(t, res.Stdout, "CGO: disabled")
 
 		ldflags := strings.TrimSpace(t1ReadRepoFile(t, "release/LDFLAGS"))
@@ -576,7 +579,8 @@ func runTier1F02(t *testing.T) {
 		for _, st := range steps {
 			if strings.Contains(st.Run, "go build") {
 				foundBuild = true
-				for _, tag := range strings.Split(Default9BuildTags, ",") {
+				require.Contains(t, st.Run, "release/DEFAULT_BUILD_TAGS_OTHERS")
+				for _, tag := range strings.Split(DefaultOfficialPureGoBuildTags, ",") {
 					require.Contains(t, st.Run, tag)
 				}
 				require.Contains(t, st.Run, "$(cat release/LDFLAGS)")
@@ -4436,6 +4440,7 @@ func runTier1F26(t *testing.T) {
 		writeTreeFile(repoDir, "constant/version.go", "package constant\n\nvar Version = \"1.14.4-Custom-Aether\"\n")
 		writeTreeFile(repoDir, ".github/workflows/docker.yml", "name: Fork Custom Docker\non:\n  workflow_dispatch:\n")
 		writeTreeFile(repoDir, "release/LDFLAGS", "-checklinkname=0\n")
+		writeTreeFile(repoDir, "release/DEFAULT_BUILD_TAGS_OTHERS", DefaultOfficialPureGoBuildTags+"\n")
 		writeTreeFile(repoDir, "cmd/sing-box/cmd_schema.go", "package main\n")
 		writeTreeFile(repoDir, "docs/schema.json", "{}\n")
 		_, errOut, err = t1RunGit(t, repoDir, "add", ".")
@@ -4622,7 +4627,8 @@ exit 0
 				require.Contains(t, st.Run, "./protocol/aether/...")
 			case "Build and Package Multi-Arch Static Binaries":
 				buildIdx = idx
-				for _, tag := range strings.Split(Default9BuildTags, ",") {
+				require.Contains(t, st.Run, "release/DEFAULT_BUILD_TAGS_OTHERS")
+				for _, tag := range strings.Split(DefaultOfficialPureGoBuildTags, ",") {
 					require.Contains(t, st.Run, tag)
 				}
 				require.Contains(t, st.Run, "release/LDFLAGS")

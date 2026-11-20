@@ -2306,9 +2306,10 @@ func runT519WorkflowContract(t *testing.T) {
 	require.Contains(t, wf, "git clean -fd .github/workflows/")
 	require.Contains(t, wf, "git diff HEAD --name-only -- .github/workflows/")
 
-	// 5. Mandatory CGO_ENABLED=1 -race test gate and exact 9 build tags.
+	// 5. Mandatory CGO_ENABLED=1 -race test gate and official pure-Go build tags.
 	require.Contains(t, wf, "CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/...")
-	require.Equal(t, 2, strings.Count(wf, Default9BuildTags), "9 build tags must be used in both schema gen and multi-arch builds")
+	require.Equal(t, 2, strings.Count(wf, "release/DEFAULT_BUILD_TAGS_OTHERS"), "release/DEFAULT_BUILD_TAGS_OTHERS must be used in both schema gen and multi-arch builds")
+	require.Equal(t, 2, strings.Count(wf, DefaultOfficialPureGoBuildTags), "official pure-Go fallback tags must be present in both schema gen and multi-arch builds")
 	require.Contains(t, wf, "for ARCH in amd64 arm64; do")
 
 	// 6. Bash syntax check (`bash -n`) on every embedded run: script block.
