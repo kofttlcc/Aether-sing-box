@@ -2394,7 +2394,7 @@ func BuildServerJSON(cfg TopologyConfig, listenPort uint16, ntpPort uint16, logP
 			"enabled":     true,
 			"server":      "127.0.0.1",
 			"server_port": ntpPort,
-			"interval":    "200ms",
+			"interval":    "30m",
 		}
 	}
 	return json.Marshal(root)
@@ -2505,7 +2505,7 @@ func BuildClientJSON(cfg TopologyConfig, proxyPort uint16, dialHost string, dial
 			"enabled":     true,
 			"server":      "127.0.0.1",
 			"server_port": ntpPort,
-			"interval":    "200ms",
+			"interval":    "30m",
 		}
 	}
 	return json.Marshal(root)

@@ -309,7 +309,8 @@ jobs:
           fi
           git clean -fd .github/workflows/ 2>/dev/null || true
 
-          git add -A -- ':!dist'
+          git add -A
+          git reset -q HEAD -- dist 2>/dev/null || true
           if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || ! git diff --cached --quiet; then
             git commit -m "chore(sync): merge upstream sing-box ${UPSTREAM_TAG}"
           fi
