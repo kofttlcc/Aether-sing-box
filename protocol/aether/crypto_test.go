@@ -298,14 +298,14 @@ func TestDerivePSK_BoundariesAndMalleabilityRejections(t *testing.T) {
 		require.ErrorIs(t, zeroErr, ErrAllZeroKey)
 	}
 
-	// Base64 fast-path latency check: 1,000 strict Base64 decodes must complete well under 25ms
+	// Base64 fast-path latency check: 1,000 strict Base64 decodes must stay far below Argon2id cost (>50s) even under -race + t.Parallel().
 	const validB64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwd+/8="
 	start := time.Now()
 	for range 1000 {
 		_, fastErr := DerivePSK(validB64)
 		require.NoError(t, fastErr)
 	}
-	require.Less(t, time.Since(start), 50*time.Millisecond)
+	require.Less(t, time.Since(start), 500*time.Millisecond)
 
 	// Non-canonical trailing padding bit mutation ("...+/9=" vs "...+/8=") must NOT alias to the 32B Base64 key
 	canonicalPSK, err := DerivePSK(validB64)
