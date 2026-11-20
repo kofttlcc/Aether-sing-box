@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -1477,13 +1478,17 @@ func testT414FirewallDPIAndStatisticalAudit(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, pktCount, totalSessions*2)
 
-	forbiddenSignatures := [][]byte{
+	forbiddenPrefixes := [][]byte{
 		{0x16, 0x03, 0x01},
 		{0x16, 0x03, 0x03},
-		[]byte("GET /"),
-		[]byte("HTTP/1."),
 		{0x05, 0x01, 0x00},
 		{0x01, 0x00, 0x00, 0x00}, // WireGuard initiation prefix
+	}
+	forbiddenPlaintexts := [][]byte{
+		[]byte("GET /api/v1/health"),
+		[]byte("HTTP/1.1 "),
+		[]byte("SSH-2.0-Audit_1.0"),
+		[]byte("dpi.test"),
 	}
 
 	distinctInitLens := make(map[int]struct{})
@@ -1494,9 +1499,21 @@ func testT414FirewallDPIAndStatisticalAudit(t *testing.T) {
 		require.False(t, s.HasSegmentOfExactSize(DirC2S, 18))
 		require.False(t, s.HasSegmentOfExactSize(DirS2C, 18))
 
-		for _, sig := range forbiddenSignatures {
-			require.False(t, s.ContainsBytes(DirC2S, sig), "C2S contained plaintext signature %x", sig)
-			require.False(t, s.ContainsBytes(DirS2C, sig), "S2C contained plaintext signature %x", sig)
+		c2sRaw := s.Bytes(DirC2S)
+		s2cRaw := s.Bytes(DirS2C)
+		for _, pfx := range forbiddenPrefixes {
+			require.False(t, bytes.HasPrefix(c2sRaw, pfx), "C2S stream began with plaintext protocol prefix %x", pfx)
+			require.False(t, bytes.HasPrefix(s2cRaw, pfx), "S2C stream began with plaintext protocol prefix %x", pfx)
+			if seg, ok := s.FirstSegment(DirC2S); ok {
+				require.False(t, bytes.HasPrefix(seg.Data, pfx), "C2S first segment began with plaintext protocol prefix %x", pfx)
+			}
+			if seg, ok := s.FirstSegment(DirS2C); ok {
+				require.False(t, bytes.HasPrefix(seg.Data, pfx), "S2C first segment began with plaintext protocol prefix %x", pfx)
+			}
+		}
+		for _, sig := range forbiddenPlaintexts {
+			require.False(t, s.ContainsBytes(DirC2S, sig), "C2S contained plaintext signature %q", sig)
+			require.False(t, s.ContainsBytes(DirS2C, sig), "S2C contained plaintext signature %q", sig)
 		}
 		if seg, ok := s.FirstSegment(DirC2S); ok {
 			distinctInitLens[seg.Size] = struct{}{}

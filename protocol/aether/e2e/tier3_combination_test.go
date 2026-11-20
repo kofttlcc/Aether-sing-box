@@ -1527,7 +1527,7 @@ func testT319H2MuxPoolIdleResetNetwork(t *testing.T) {
 	leaks := WaitForNoAetherLeaks(5 * time.Second)
 	require.Empty(t, leaks, "unexpected goroutine leaks: %v", leaks)
 
-	finalFDs, err := CountOpenFDs()
+	finalFDs, err := WaitForOpenFDsAtMost(baselineFDs+8, 5*time.Second)
 	require.NoError(t, err)
 	require.LessOrEqual(t, finalFDs, baselineFDs+8, "FD leak suspected: baseline=%d final=%d", baselineFDs, finalFDs)
 }
@@ -2183,7 +2183,7 @@ func testT332Interleaved150Valid40BadZeroLeaks(t *testing.T) {
 
 	topo := StartTopology(t, TopologyConfig{
 		ServerPassword:         psk,
-		ServerHandshakeTimeout: "500ms",
+		ServerHandshakeTimeout: "2s",
 		ClientPassword:         psk,
 	})
 
@@ -2221,7 +2221,7 @@ func testT332Interleaved150Valid40BadZeroLeaks(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// Truncated 40B burst triggers Server HandshakeTimeout(500ms); bad-tag triggers StealthDrain.
+				// Truncated 40B burst triggers Server HandshakeTimeout(2s); bad-tag triggers StealthDrain.
 				var probePayload []byte
 				if idx%8 == 0 {
 					probePayload = DeterministicBytes(uint64(9000+idx), 40)
@@ -2241,7 +2241,7 @@ func testT332Interleaved150Valid40BadZeroLeaks(t *testing.T) {
 	leaks := WaitForNoAetherLeaks(5 * time.Second)
 	require.Empty(t, leaks, "leaked Aether/sing-box goroutines: %v", leaks)
 
-	finalFDs, err := CountOpenFDs()
+	finalFDs, err := WaitForOpenFDsAtMost(baselineFDs+8, 5*time.Second)
 	require.NoError(t, err)
 	require.LessOrEqual(t, finalFDs, baselineFDs+8, "open FD count leaked: baseline=%d final=%d", baselineFDs, finalFDs)
 }

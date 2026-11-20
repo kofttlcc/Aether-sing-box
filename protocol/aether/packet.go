@@ -29,6 +29,8 @@ var (
 	_ N.EarlyConn          = (*ClientPacketConn)(nil)
 	_ N.FrontHeadroom      = (*ClientPacketConn)(nil)
 	_ N.RearHeadroom       = (*ClientPacketConn)(nil)
+	_ N.ReaderWithMTU      = (*ClientPacketConn)(nil)
+	_ N.WriterWithMTU      = (*ClientPacketConn)(nil)
 	_ N.ReaderWithUpstream = (*ClientPacketConn)(nil)
 	_ N.WriterWithUpstream = (*ClientPacketConn)(nil)
 	_ common.WithUpstream  = (*ClientPacketConn)(nil)
@@ -40,6 +42,8 @@ var (
 	_ N.EarlyConn          = (*ServerPacketConn)(nil)
 	_ N.FrontHeadroom      = (*ServerPacketConn)(nil)
 	_ N.RearHeadroom       = (*ServerPacketConn)(nil)
+	_ N.ReaderWithMTU      = (*ServerPacketConn)(nil)
+	_ N.WriterWithMTU      = (*ServerPacketConn)(nil)
 	_ N.ReaderWithUpstream = (*ServerPacketConn)(nil)
 	_ N.WriterWithUpstream = (*ServerPacketConn)(nil)
 	_ common.WithUpstream  = (*ServerPacketConn)(nil)
@@ -109,6 +113,14 @@ func (p *packetConnBase) FrontHeadroom() int {
 
 func (p *packetConnBase) RearHeadroom() int {
 	return 0
+}
+
+func (p *packetConnBase) ReaderMTU() int {
+	return math.MaxUint16
+}
+
+func (p *packetConnBase) WriterMTU() int {
+	return math.MaxUint16
 }
 
 func (p *packetConnBase) Upstream() any {

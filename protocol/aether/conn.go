@@ -21,7 +21,7 @@ import (
 const (
 	// DefaultHeartbeatInterval is used when HeartbeatInterval == 0.
 	DefaultHeartbeatInterval    = 30 * time.Second
-	minControlWriteTimeout      = 500 * time.Millisecond
+	minControlWriteTimeout      = 5 * time.Second
 	maxControlWriteTimeout      = 5 * time.Second
 	clientInitialBurstGrace     = 25 * time.Millisecond
 	clientInitialBurstWaitSkip  = 50 * time.Millisecond
@@ -145,6 +145,7 @@ type Conn struct {
 	unreadEnd            int
 	pendingRawEOF        atomic.Bool
 	readEOF              atomic.Bool
+	readDeliverBlocked   atomic.Bool
 	readErrMu            sync.Mutex
 	readErr              error
 
@@ -857,6 +858,12 @@ func (c *Conn) awaitServerRespForWrite(dl time.Time) error {
 			}
 			return net.ErrClosed
 		case <-c.doneCh:
+			if c.handshakeRead.Load() {
+				return nil
+			}
+			if err := c.getReadErr(); err != nil {
+				return err
+			}
 			return net.ErrClosed
 		case <-timerC:
 			c.writeBroken.Store(true)
@@ -868,6 +875,12 @@ func (c *Conn) awaitServerRespForWrite(dl time.Time) error {
 			select {
 			case <-c.respDoneCh:
 			case <-c.doneCh:
+				if c.handshakeRead.Load() {
+					return nil
+				}
+				if err := c.getReadErr(); err != nil {
+					return err
+				}
 				return net.ErrClosed
 			case <-timerC:
 				c.writeBroken.Store(true)
@@ -926,6 +939,12 @@ func (c *Conn) ensureClientHandshakeRead() error {
 			}
 			return net.ErrClosed
 		case <-c.doneCh:
+			if c.handshakeRead.Load() {
+				return nil
+			}
+			if err := c.getReadErr(); err != nil {
+				return err
+			}
 			return net.ErrClosed
 		case <-att.done:
 			if c.handshakeRead.Load() {
@@ -1269,9 +1288,12 @@ func (c *Conn) deliverReadData(data []byte) bool {
 		}
 		c.readStateMu.Unlock()
 
+		c.readDeliverBlocked.Store(true)
 		select {
 		case <-c.readConsumedCh:
+			c.readDeliverBlocked.Store(false)
 		case <-c.doneCh:
+			c.readDeliverBlocked.Store(false)
 			return false
 		}
 	}
@@ -1367,6 +1389,7 @@ func (c *Conn) readLoop() {
 			for c.lenHdrOff < EncryptedLengthSize {
 				n, err := c.rawConn.Read(c.lenHdrBuf[c.lenHdrOff:])
 				if n > 0 {
+					c.lastReadNs.Store(time.Now().UnixNano())
 					c.lenHdrOff += n
 					if c.lenHdrOff >= EncryptedLengthSize {
 						if errors.Is(err, io.EOF) {
@@ -1418,6 +1441,7 @@ func (c *Conn) readLoop() {
 		for c.bodyOff < encBodyLen {
 			n, err := c.rawConn.Read(c.bodyBuf[c.bodyOff:encBodyLen])
 			if n > 0 {
+				c.lastReadNs.Store(time.Now().UnixNano())
 				c.bodyOff += n
 				if c.bodyOff >= encBodyLen {
 					if errors.Is(err, io.EOF) {
@@ -1655,6 +1679,12 @@ func (c *Conn) coordinatorLoop() {
 				} else {
 					resetTimer(time.Millisecond)
 				}
+				continue
+			}
+
+			if c.readDeliverBlocked.Load() {
+				pingOutstanding = false
+				resetTimer(jitterTarget)
 				continue
 			}
 

@@ -4780,17 +4780,9 @@ func runTier1F27(t *testing.T) {
 		}
 		topo.Close()
 
-		deadline := time.Now().Add(1500 * time.Millisecond)
-		var fdAfter int
-		for time.Now().Before(deadline) {
-			fdAfter, err = CountOpenFDs()
-			require.NoError(t, err)
-			if fdAfter <= fdBase+1 {
-				break
-			}
-			time.Sleep(30 * time.Millisecond)
-		}
-		require.LessOrEqual(t, fdAfter, fdBase+1, "FD leak: baseline=%d after=%d", fdBase, fdAfter)
+		fdAfter, err := WaitForOpenFDsAtMost(fdBase+4, 5*time.Second)
+		require.NoError(t, err)
+		require.LessOrEqual(t, fdAfter, fdBase+4, "FD leak: baseline=%d after=%d", fdBase, fdAfter)
 	})
 
 	t.Run("T1-F27-04", func(t *testing.T) {

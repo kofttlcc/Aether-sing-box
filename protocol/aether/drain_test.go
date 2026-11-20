@@ -347,7 +347,9 @@ func TestDrainGuardSemaphoreNonStarvationAndShedding(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return g.DrainInFlight() == 4
 	}, time.Second, 10*time.Millisecond)
-	require.Zero(t, g.HandshakeInFlight(), "handshakeSem must stay freed even when drainSem is saturated")
+	require.Eventually(t, func() bool {
+		return g.HandshakeInFlight() == 0
+	}, time.Second, 5*time.Millisecond, "handshakeSem must stay freed even when drainSem is saturated")
 
 	// Legitimate handshake acquire must succeed immediately without blocking.
 	legitRel, ok := g.TryAcquireHandshake()

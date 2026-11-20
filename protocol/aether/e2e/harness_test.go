@@ -164,6 +164,24 @@ func CountOpenFDs() (int, error) {
 	return count, nil
 }
 
+// WaitForOpenFDsAtMost polls CountOpenFDs with GC until open FDs <= maxFDs or timeout expires.
+func WaitForOpenFDsAtMost(maxFDs int, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	var last int
+	for {
+		runtime.GC()
+		n, err := CountOpenFDs()
+		if err != nil {
+			return 0, err
+		}
+		last = n
+		if n <= maxFDs || !time.Now().Before(deadline) {
+			return last, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // IsConnReset reports whether err represents a TCP RST ("connection reset by peer")
 // on both macOS and Linux.
 func IsConnReset(err error) bool {
