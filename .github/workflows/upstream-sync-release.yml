@@ -109,10 +109,15 @@ jobs:
 
           RELEASE_EXISTS=false
           TARGET_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
-          if command -v gh >/dev/null 2>&1 && [ -n "${TARGET_REPO}" ]; then
-            RELEASE_VIEW_JSON="$(gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" --json isDraft,assets 2>/dev/null || true)"
-            if [ -n "${RELEASE_VIEW_JSON}" ] && printf '%s' "${RELEASE_VIEW_JSON}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
-              RELEASE_EXISTS=true
+          GH_REPO_ARGS=()
+          if [ -n "${TARGET_REPO}" ]; then
+            GH_REPO_ARGS=(--repo "${TARGET_REPO}")
+          fi
+          if command -v gh >/dev/null 2>&1; then
+            if RELEASE_VIEW_OUT="$(gh release view "${RELEASE_TAG}" ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} --json isDraft,assets 2>/dev/null)"; then
+              if [ -z "${RELEASE_VIEW_OUT}" ] || printf '%s' "${RELEASE_VIEW_OUT}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
+                RELEASE_EXISTS=true
+              fi
             fi
           elif git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
             RELEASE_EXISTS=true
@@ -278,7 +283,7 @@ jobs:
                 -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${UPSTREAM_VER}-Custom-Aether' ${LDFLAGS_SHARED} -s -w -buildid=" \
                 -o "${PKG_DIR}/sing-box" ./cmd/sing-box
 
-            if [ "${ARCH}" = "amd64" ]; then
+            if [ "${ARCH}" = "amd64" ] && [ -x "${PKG_DIR}/sing-box" ]; then
               "${PKG_DIR}/sing-box" version
             fi
 
@@ -306,9 +311,9 @@ jobs:
           set -euo pipefail
           RELEASE_TAG="${RELEASE_TAG:-${UPSTREAM_TAG}-Custom-Aether}"
           TARGET_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
-          if [ -z "${TARGET_REPO}" ]; then
-            echo "::error::Target repository (GH_REPO / GITHUB_REPOSITORY) is empty"
-            exit 1
+          GH_REPO_ARGS=()
+          if [ -n "${TARGET_REPO}" ]; then
+            GH_REPO_ARGS=(--repo "${TARGET_REPO}")
           fi
 
           if ! git config user.name >/dev/null 2>&1; then
@@ -335,10 +340,13 @@ jobs:
           HEAD_SHA="$(git rev-parse HEAD)"
 
           # Detect existing GitHub Release (e.g., partial/draft release from an interrupted run).
-          EXISTING_RELEASE_JSON="$(gh release view "${RELEASE_TAG}" --repo "${TARGET_REPO}" --json isDraft,assets 2>/dev/null || true)"
+          RELEASE_EXISTS_ON_GITHUB=false
           HAS_PUBLISHED_RELEASE=false
-          if [ -n "${EXISTING_RELEASE_JSON}" ] && printf '%s' "${EXISTING_RELEASE_JSON}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
-            HAS_PUBLISHED_RELEASE=true
+          if EXISTING_RELEASE_OUT="$(gh release view "${RELEASE_TAG}" ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} --json isDraft,assets 2>/dev/null)"; then
+            RELEASE_EXISTS_ON_GITHUB=true
+            if [ -z "${EXISTING_RELEASE_OUT}" ] || printf '%s' "${EXISTING_RELEASE_OUT}" | jq -e '.isDraft == false and ((.assets | length) > 0)' >/dev/null 2>&1; then
+              HAS_PUBLISHED_RELEASE=true
+            fi
           fi
 
           # Create or align annotated tag with HEAD (only move an existing orphaned tag when no published release exists).
@@ -347,7 +355,7 @@ jobs:
             TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
             if [ "${TAG_COMMIT}" != "${HEAD_SHA}" ]; then
               if [ "${HAS_PUBLISHED_RELEASE}" = "true" ]; then
-                echo "::error::Published release ${RELEASE_TAG} already exists on ${TARGET_REPO} at ${TAG_COMMIT}; refusing to move tag to ${HEAD_SHA}"
+                echo "::error::Published release ${RELEASE_TAG} already exists on ${TARGET_REPO:-origin} at ${TAG_COMMIT}; refusing to move tag to ${HEAD_SHA}"
                 exit 1
               fi
               git tag -fa "${RELEASE_TAG}" -m "Aether-sing-box ${RELEASE_TAG}"
@@ -367,20 +375,20 @@ jobs:
           RELEASE_TITLE="Aether-sing-box ${RELEASE_TAG}"
           RELEASE_NOTES="Automated upstream sync with SagerNet/sing-box ${UPSTREAM_TAG} (passed CGO_ENABLED=1 -race test gate)."
 
-          if [ -n "${EXISTING_RELEASE_JSON}" ]; then
+          if [ "${RELEASE_EXISTS_ON_GITHUB}" = "true" ]; then
             gh release upload "${RELEASE_TAG}" \
-              --repo "${TARGET_REPO}" \
+              ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} \
               --clobber \
               dist/*.tar.gz \
               dist/SHA256SUMS
             gh release edit "${RELEASE_TAG}" \
-              --repo "${TARGET_REPO}" \
+              ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} \
               --draft=false \
               --title "${RELEASE_TITLE}" \
               --notes "${RELEASE_NOTES}"
           else
             gh release create "${RELEASE_TAG}" \
-              --repo "${TARGET_REPO}" \
+              ${GH_REPO_ARGS[@]+"${GH_REPO_ARGS[@]}"} \
               --verify-tag \
               dist/*.tar.gz \
               dist/SHA256SUMS \
