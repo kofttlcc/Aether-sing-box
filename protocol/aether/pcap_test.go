@@ -280,11 +280,17 @@ func TestPCAPWireCoalescingOverheadAndEntropy(t *testing.T) {
 	ent := shannonEntropy(wireBytes)
 	require.Greater(t, ent, 7.95, "wire Shannon entropy %.4f must exceed 7.95 bits/byte", ent)
 
-	// Zero recognizable TLS / HTTP / Trojan plaintext markers on the wire.
+	// Zero recognizable TLS / HTTP / target-address plaintext markers on the wire.
+	// Note: 3-byte TLS record headers ({0x16, 0x03, 0x01/0x03}) are checked as segment
+	// prefixes rather than arbitrary-offset substrings across 528 KiB of uniform random
+	// ciphertext, where a random 3-byte match occurs with ~6.1% probability per run.
+	require.False(t, bytes.Contains(wireBytes, []byte("pcap.example")))
 	require.False(t, bytes.Contains(wireBytes, []byte("HTTP/1.")))
 	require.False(t, bytes.Contains(wireBytes, []byte("GET /")))
-	require.False(t, bytes.Contains(wireBytes, []byte{0x16, 0x03, 0x01}))
-	require.False(t, bytes.Contains(wireBytes, []byte{0x16, 0x03, 0x03}))
+	for idx, seg := range segs {
+		require.False(t, bytes.HasPrefix(seg, []byte{0x16, 0x03, 0x01}), "segment %d began with TLS 1.0 record prefix", idx)
+		require.False(t, bytes.HasPrefix(seg, []byte{0x16, 0x03, 0x03}), "segment %d began with TLS 1.2 record prefix", idx)
+	}
 }
 
 func TestPCAPDisableShapingZeroPaddingHead(t *testing.T) {
