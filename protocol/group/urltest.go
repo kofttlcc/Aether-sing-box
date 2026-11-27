@@ -459,6 +459,19 @@ func (b *urlTestBatch) test(outbounds []adapter.Outbound, link string, interval 
 				b.access.Unlock()
 				return nil, nil
 			})
+		case *Fallback:
+			b.checked[tag] = true
+			b.groups = append(b.groups, nested)
+			b.batch.Go(tag, func() (any, error) {
+				if nested.group == nil {
+					return nil, nil
+				}
+				nestedResult, _ := nested.group.urlTest(b.ctx, force, force)
+				b.access.Lock()
+				maps.Copy(b.result, nestedResult)
+				b.access.Unlock()
+				return nil, nil
+			})
 		case adapter.OutboundGroup:
 			b.checked[tag] = true
 			b.groups = append(b.groups, nested)

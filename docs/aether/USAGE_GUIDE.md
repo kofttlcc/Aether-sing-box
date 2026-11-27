@@ -275,7 +275,73 @@ Repository automation in [.github/workflows/upstream-sync-release.yml](../../.gi
 - **Workflow Preservation & Conflict Safety:** Merges `refs/tags/<UPSTREAM_TAG>` with `--no-commit --no-ff`, immediately restores the fork's `.github/workflows/` directory to pre-merge `HEAD` (`0` diff, preventing `GITHUB_TOKEN` `workflows`-scope push rejection and keeping `docker.yml` / `linux.yml` release triggers disabled), resolves `docs/schema.json` / `constant/version.go` conflicts, and aborts cleanly via `git merge --abort` (exiting non-zero) if any source-code conflict remains.
 - **Mandatory `-race` Verification Before Release:** Updates `constant/version.go` to `<ver>-Custom-Aether`, regenerates `docs/schema.json`, and runs:
   ```bash
-  CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/...
+  CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/... ./protocol/group/... ./experimental/clashapi/...
   ```
 - **Multi-Arch Packaging & Publishing:** Cross-compiles `CGO_ENABLED=0` static binaries for `linux/amd64` and `linux/arm64` using upstream's official pure-Go release build tags dynamically loaded from `release/DEFAULT_BUILD_TAGS_OTHERS` (including `with_tailscale`, `with_cloudflared`, `with_openvpn`, `with_openconnect`, `with_ccm`, `with_ocm`, `with_usbip`) and `release/LDFLAGS`, packages `.tar.gz` archives + `SHA256SUMS`, commits `chore(sync): merge upstream sing-box <tag>`, tags `<tag>-Custom-Aether`, pushes branch and tag, and publishes the GitHub Release via `gh release create`.
 - **Secrets:** Uses `${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}`. Default `GITHUB_TOKEN` works directly because `.github/workflows/` is never modified in sync commits; an optional `WORKFLOW_PAT` secret may be added if you want tag pushes from the sync job to trigger other workflows.
+
+---
+
+## 10. Native Fallback Policy Group (`"type": "fallback"`)
+
+`Aether-sing-box` includes a native `"type": "fallback"` priority failover outbound group (100% JSON-compatible with macOS Xiliu). Unlike `"type": "urltest"`, which always migrates traffic to the lowest-latency outbound, `"type": "fallback"` strictly follows the configured `outbounds` order (`#1` primary, `#2` backup 1, `#3` backup 2, ...), keeping traffic on the highest-priority healthy node even when a lower-priority backup has lower latency.
+
+### 10.1 Configuration Example
+
+```json
+{
+  "outbounds": [
+    {
+      "type": "fallback",
+      "tag": "primary-failover",
+      "outbounds": ["US-Residential-Primary", "HK-BGP-Backup-1", "JP-Backup-2"],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "180s",
+      "idle_timeout": "30m",
+      "max_delay": 800,
+      "fail_times": 2,
+      "recover_times": 2,
+      "interrupt_exist_connections": true
+    }
+  ]
+}
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `outbounds` | array | **required** | Ordered list of member outbound tags (`#1` highest priority). Duplicate tags are rejected. |
+| `url` | string | `https://www.gstatic.com/generate_204` | Health-check probe URL. |
+| `interval` | duration | `"180s"` | Background active probe interval. Must be `<= idle_timeout`. |
+| `idle_timeout` | duration | `"30m"` | Suspends periodic probing after no traffic for this duration; wakes automatically on new traffic or interface changes. |
+| `max_delay` | uint16 (ms) | `0` (unlimited) | Maximum acceptable probe latency in milliseconds. A node exceeding `max_delay` is demoted as degraded even if reachable. |
+| `fail_times` | uint8 | `2` | Consecutive passive dial failures before triggering a deduplicated async verification probe (`<= 3s` timeout) to demote the node and fail over. |
+| `recover_times` | uint8 | `2` | Consecutive healthy probes (within `max_delay`) required before a previously degraded higher-priority node is promoted back (anti-flapping). Cold-start initial probes and manual `URLTest` / `CheckOutbounds` bypass the streak wait. |
+| `interrupt_exist_connections` | bool | `true` | Interrupt active connections on **any** selected-node transition (primary -> backup, backup -> primary, or Pin/Unpin changing the selected node) to keep egress IP consistent. Set `false` to let existing connections drain naturally. |
+
+### 10.2 Key Runtime Guarantees
+
+- **Strict Priority Selection:** Always selects the first healthy outbound in `0..N-1` order whose latency satisfies `max_delay == 0 || delay <= max_delay`. If every member is temporarily unhealthy (for example right after a network change), it falls back to `#1` as a safety net rather than failing with no outbound.
+- **Passive In-Flight Rescue:** When not manually pinned and the caller context is still active, a failed `DialContext` or `ListenPacket` attempt immediately retries up to 2 subsequent healthy/backup members within the remaining context deadline while incrementing `fail_times` for fast background verification.
+- **Anti-Flapping Failback & Bidirectional Interrupt:** A degraded primary must pass `recover_times` consecutive periodic probes before reclaiming traffic. On any selection switch, active connections are closed immediately when `interrupt_exist_connections` is `true`.
+
+### 10.3 Clash API / Mihomo WebUI Pin & Unpin
+
+The Clash API (`experimental.clash_api`) supports ephemeral runtime pinning (in-memory only; never rewrites your config file) compatible with `metacubexd`, `zashboard`, and `curl`:
+
+```bash
+# Inspect group state (includes "fixed": "<tag>" only while pinned)
+curl -s http://127.0.0.1:9090/proxies/primary-failover | jq
+
+# Ephemerally pin the group to a backup node (returns 204 No Content)
+curl -X PUT http://127.0.0.1:9090/proxies/primary-failover \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"HK-BGP-Backup-1"}'
+
+# Unpin and restore automatic priority failover (Mihomo WebUI standard: DELETE)
+curl -X DELETE http://127.0.0.1:9090/proxies/primary-failover
+
+# Alternative unpin via PUT with empty name (also returns 204 No Content)
+curl -X PUT http://127.0.0.1:9090/proxies/primary-failover \
+  -H 'Content-Type: application/json' \
+  -d '{"name":""}'
+```

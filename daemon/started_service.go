@@ -601,7 +601,10 @@ func (s *StartedService) readGroups() *Groups {
 		var g Group
 		g.Tag = iGroup.Tag()
 		g.Type = iGroup.Type()
-		_, g.Selectable = iGroup.(*group.Selector)
+		switch iGroup.(type) {
+		case *group.Selector, *group.Fallback:
+			g.Selectable = true
+		}
 		if selected := iGroup.Selected(N.NetworkTCP); selected != nil {
 			g.Selected = selected.Tag()
 		}
@@ -729,9 +732,12 @@ func (s *StartedService) URLTest(ctx context.Context, request *URLTestRequest) (
 	}
 	historyStorage := boxService.urlTestHistoryStorage
 	urlTest, isURLTest := outbound.(*group.URLTest)
+	fallback, isFallback := outbound.(*group.Fallback)
 	outboundGroup, isOutboundGroup := outbound.(adapter.OutboundGroup)
 	if isURLTest {
 		go urlTest.CheckOutbounds()
+	} else if isFallback {
+		go fallback.CheckOutbounds()
 	} else if isOutboundGroup {
 		outbounds := common.FilterNotNil(common.Map(outboundGroup.All(), func(it string) adapter.Outbound {
 			itOutbound, _ := boxService.outboundManager.Outbound(it)
@@ -765,12 +771,17 @@ func (s *StartedService) SelectOutbound(ctx context.Context, request *SelectOutb
 	if !isLoaded {
 		return nil, status.Error(codes.NotFound, "selector not found: "+request.GroupTag)
 	}
-	selector, isSelector := outboundGroup.(*group.Selector)
-	if !isSelector {
+	switch g := outboundGroup.(type) {
+	case *group.Selector:
+		if !g.SelectOutbound(request.OutboundTag) {
+			return nil, status.Error(codes.NotFound, "outbound not found in selector: "+request.OutboundTag)
+		}
+	case *group.Fallback:
+		if !g.SelectOutbound(request.OutboundTag) {
+			return nil, status.Error(codes.NotFound, "outbound not found in fallback: "+request.OutboundTag)
+		}
+	default:
 		return nil, status.Error(codes.InvalidArgument, "outbound is not a selector: "+request.GroupTag)
-	}
-	if !selector.SelectOutbound(request.OutboundTag) {
-		return nil, status.Error(codes.NotFound, "outbound not found in selector: "+request.OutboundTag)
 	}
 	return &emptypb.Empty{}, nil
 }

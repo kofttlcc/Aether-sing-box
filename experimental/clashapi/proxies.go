@@ -30,6 +30,7 @@ func proxyRouter(server *Server, router adapter.Router) http.Handler {
 		r.Get("/", getProxy(server))
 		r.Get("/delay", getProxyDelay(server))
 		r.Put("/", updateProxy)
+		r.Delete("/", unpinProxy)
 	})
 	return r
 }
@@ -76,13 +77,16 @@ func proxyInfo(server *Server, detour adapter.Outbound) *badjson.JSONObject {
 	} else {
 		info.Put("history", []*adapter.URLTestHistory{})
 	}
-	if group, isGroup := detour.(adapter.OutboundGroup); isGroup {
+	if outboundGroup, isGroup := detour.(adapter.OutboundGroup); isGroup {
 		var now string
-		if selected := group.Selected(N.NetworkTCP); selected != nil {
+		if selected := outboundGroup.Selected(N.NetworkTCP); selected != nil {
 			now = selected.Tag()
 		}
 		info.Put("now", now)
-		info.Put("all", group.All())
+		info.Put("all", outboundGroup.All())
+		if fb, isFallback := detour.(*group.Fallback); isFallback && fb.IsPinned() {
+			info.Put("fixed", fb.PinnedTag())
+		}
 	}
 	return &info
 }
@@ -172,19 +176,37 @@ func updateProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy := r.Context().Value(CtxKeyProxy).(adapter.Outbound)
-	selector, ok := proxy.(*group.Selector)
+	switch g := proxy.(type) {
+	case *group.Selector:
+		if !g.SelectOutbound(req.Name) {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, newError("Selector update error: not found"))
+			return
+		}
+	case *group.Fallback:
+		if !g.SelectOutbound(req.Name) {
+			render.Status(r, http.StatusBadRequest)
+			render.JSON(w, r, newError("Fallback update error: not found"))
+			return
+		}
+	default:
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, newError("Must be a Selector or Fallback"))
+		return
+	}
+
+	render.NoContent(w, r)
+}
+
+func unpinProxy(w http.ResponseWriter, r *http.Request) {
+	proxy := r.Context().Value(CtxKeyProxy).(adapter.Outbound)
+	fb, ok := proxy.(*group.Fallback)
 	if !ok {
 		render.Status(r, http.StatusBadRequest)
-		render.JSON(w, r, newError("Must be a Selector"))
+		render.JSON(w, r, newError("Must be a Fallback"))
 		return
 	}
-
-	if !selector.SelectOutbound(req.Name) {
-		render.Status(r, http.StatusBadRequest)
-		render.JSON(w, r, newError("Selector update error: not found"))
-		return
-	}
-
+	fb.SelectOutbound("")
 	render.NoContent(w, r)
 }
 

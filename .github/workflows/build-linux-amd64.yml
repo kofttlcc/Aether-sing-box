@@ -47,7 +47,7 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: |
-          go test -race ./cmd/sing-box/... ./protocol/aether/... -timeout 30m
+          go test -race ./cmd/sing-box/... ./protocol/aether/... ./protocol/group/... ./experimental/clashapi/... -timeout 30m
 
       - name: Build sing-box (Linux amd64)
         run: |
