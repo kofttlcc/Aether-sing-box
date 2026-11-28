@@ -286,6 +286,7 @@ jobs:
           if [ -z "${TEST_LDFLAGS}" ] && [ -f release/LDFLAGS ]; then
             TEST_LDFLAGS="$(cat release/LDFLAGS)"
           fi
+          unset FORCE_REPUBLISH UPSTREAM_TAG UPSTREAM_VER RELEASE_TAG SHOULD_SYNC SHOULD_PROCEED GH_REPO
           CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/... ./route/... ./daemon/... ./protocol/group/... ./experimental/clashapi/... -tags "${TEST_TAGS}" -ldflags "${TEST_LDFLAGS}" -timeout 30m
 
       - name: Build and Package Multi-Arch Static Binaries
