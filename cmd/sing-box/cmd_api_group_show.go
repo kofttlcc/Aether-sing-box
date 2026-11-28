@@ -37,6 +37,13 @@ func runAPIGroupShow(groupTag string) error {
 		block.addLine("Tag", group.GetTag())
 		block.addLine("Type", group.GetType())
 		block.addLine("Selected", group.GetSelected())
+		if group.GetPinSupported() {
+			pinned := group.GetPinned()
+			if pinned == "" {
+				pinned = "(none)"
+			}
+			block.addLine("Pinned", pinned)
+		}
 		block.flush()
 		table := tableWriter{
 			header: []string{"TAG", "TYPE", "DELAY"},

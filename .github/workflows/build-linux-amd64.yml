@@ -47,12 +47,22 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: |
-          go test -race ./cmd/sing-box/... ./protocol/aether/... ./protocol/group/... ./experimental/clashapi/... -timeout 30m
+          set -euo pipefail
+          BUILD_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
+          TAGS_FILE="release/DEFAULT_BUILD_TAGS_OTHERS"
+          if [ -f "${TAGS_FILE}" ]; then
+            BUILD_TAGS="$(tr -d ' \t\r\n' < "${TAGS_FILE}")"
+          fi
+          LDFLAGS_SHARED=""
+          if [ -f release/LDFLAGS ]; then
+            LDFLAGS_SHARED="$(cat release/LDFLAGS)"
+          fi
+          go test -race -count=1 -tags "${BUILD_TAGS}" -ldflags "${LDFLAGS_SHARED}" ./cmd/sing-box/... ./route/... ./daemon/... ./protocol/aether/... ./protocol/group/... ./experimental/clashapi/... -timeout 30m
 
-      - name: Build sing-box (Linux amd64)
+      - name: Build sing-box (Linux amd64 and arm64)
         run: |
           set -euo pipefail
-          mkdir -p build/
+          mkdir -p build/ dist/
           BUILD_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
           TAGS_FILE="release/DEFAULT_BUILD_TAGS_OTHERS"
           if [ -f "${TAGS_FILE}" ]; then
@@ -64,15 +74,40 @@ jobs:
               -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' $(cat release/LDFLAGS) -s -w -buildid=" \
               -o build/sing-box-linux-amd64 ./cmd/sing-box
           ./build/sing-box-linux-amd64 version
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -v -trimpath \
+              -tags "${BUILD_TAGS}" \
+              -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${VERSION}' $(cat release/LDFLAGS) -s -w -buildid=" \
+              -o build/sing-box-linux-arm64 ./cmd/sing-box
+          for ARCH in amd64 arm64; do
+            PKG_NAME="sing-box-${VERSION}-linux-${ARCH}"
+            PKG_DIR="dist/${PKG_NAME}"
+            mkdir -p "${PKG_DIR}"
+            cp "build/sing-box-linux-${ARCH}" "${PKG_DIR}/sing-box"
+            chmod 0755 "${PKG_DIR}/sing-box"
+            if [ -f LICENSE ]; then
+              cp LICENSE "${PKG_DIR}/LICENSE"
+            fi
+            tar -czf "dist/${PKG_NAME}.tar.gz" -C dist "${PKG_NAME}"
+            rm -rf "${PKG_DIR}"
+          done
+          (
+            cd dist
+            sha256sum *.tar.gz > SHA256SUMS
+          )
 
       - name: Release Binary (GitHub Release)
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           tag_name: ${{ github.ref_name }}
-          name: "Aether-sing-box ${{ github.ref_name }} (Linux x86_64)"
+          name: "Aether-sing-box ${{ github.ref_name }} (Linux amd64 & arm64)"
           prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
-          files: build/sing-box-linux-amd64
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            build/sing-box-linux-amd64
+            build/sing-box-linux-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -80,6 +115,10 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: sing-box-linux-amd64
-          path: build/sing-box-linux-amd64
+          name: sing-box-linux-multiarch
+          path: |
+            build/sing-box-linux-amd64
+            build/sing-box-linux-arm64
+            dist/*.tar.gz
+            dist/SHA256SUMS
           retention-days: 7

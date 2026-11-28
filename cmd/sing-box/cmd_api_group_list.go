@@ -28,11 +28,15 @@ func runAPIGroupList() error {
 		return err
 	}
 	table := tableWriter{
-		header:       []string{"TAG", "TYPE", "SELECTED"},
+		header:       []string{"TAG", "TYPE", "SELECTED", "PINNED"},
 		emptyMessage: "no groups",
 	}
 	for _, group := range groups {
-		table.addRow(group.GetTag(), group.GetType(), group.GetSelected())
+		pinned := "-"
+		if group.GetPinSupported() && group.GetPinned() != "" {
+			pinned = group.GetPinned()
+		}
+		table.addRow(group.GetTag(), group.GetType(), group.GetSelected(), pinned)
 	}
 	table.flush()
 	return nil

@@ -165,14 +165,23 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		conn = tracker.RoutedConnection(ctx, conn, metadata, selectedRule, selectedOutbound)
 	}
 	ctx = interrupt.ContextWithIsExternalConnection(ctx, true)
-	onClose = registerInterrupt(chain, conn, onClose)
-	outbound := chain[len(chain)-1]
+	outbound, interruptChain := selectDialOutbound(chain)
+	onClose = registerInterrupt(interruptChain, conn, onClose)
 	if outboundHandler, isHandler := outbound.(adapter.ConnectionHandler); isHandler {
 		outboundHandler.NewConnection(ctx, conn, metadata, onClose)
 	} else {
 		r.connection.NewConnection(ctx, outbound, conn, metadata, onClose)
 	}
 	return nil
+}
+
+func selectDialOutbound(chain []adapter.Outbound) (adapter.Outbound, []adapter.Outbound) {
+	for i, item := range chain {
+		if dialerGroup, ok := item.(adapter.DialerOutboundGroup); ok && dialerGroup.DialByGroup() {
+			return item, chain[:i]
+		}
+	}
+	return chain[len(chain)-1], chain
 }
 
 func resolveOutbound(outbound adapter.Outbound, network string) ([]adapter.Outbound, error) {
@@ -334,8 +343,8 @@ func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, m
 		conn = newFakeIPNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
 	}
 	ctx = interrupt.ContextWithIsExternalConnection(ctx, true)
-	onClose = registerInterrupt(chain, conn, onClose)
-	outbound := chain[len(chain)-1]
+	outbound, interruptChain := selectDialOutbound(chain)
+	onClose = registerInterrupt(interruptChain, conn, onClose)
 	if outboundHandler, isHandler := outbound.(adapter.PacketConnectionHandler); isHandler {
 		outboundHandler.NewPacketConnection(ctx, conn, metadata, onClose)
 	} else {
@@ -493,6 +502,12 @@ func (r *Router) preMatchFlow(ctx context.Context, metadata *adapter.InboundCont
 	}
 	chain, err := resolveOutbound(outbound, metadata.Network)
 	if err != nil {
+		return continueResult
+	}
+	if slices.ContainsFunc(chain, func(it adapter.Outbound) bool {
+		dialerGroup, ok := it.(adapter.DialerOutboundGroup)
+		return ok && dialerGroup.DialByGroup()
+	}) {
 		return continueResult
 	}
 	outbound = chain[len(chain)-1]

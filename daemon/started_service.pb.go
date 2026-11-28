@@ -690,6 +690,8 @@ type Group struct {
 	Selected      string                 `protobuf:"bytes,4,opt,name=selected,proto3" json:"selected,omitempty"`
 	IsExpand      bool                   `protobuf:"varint,5,opt,name=isExpand,proto3" json:"isExpand,omitempty"`
 	Items         []*GroupItem           `protobuf:"bytes,6,rep,name=items,proto3" json:"items,omitempty"`
+	Pinned        string                 `protobuf:"bytes,7,opt,name=pinned,proto3" json:"pinned,omitempty"`
+	PinSupported  bool                   `protobuf:"varint,8,opt,name=pinSupported,proto3" json:"pinSupported,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -764,6 +766,20 @@ func (x *Group) GetItems() []*GroupItem {
 		return x.Items
 	}
 	return nil
+}
+
+func (x *Group) GetPinned() string {
+	if x != nil {
+		return x.Pinned
+	}
+	return ""
+}
+
+func (x *Group) GetPinSupported() bool {
+	if x != nil {
+		return x.PinSupported
+	}
+	return false
 }
 
 type GroupItem struct {
@@ -7490,7 +7506,7 @@ const file_daemon_started_service_proto_rawDesc = "" +
 	"\vuplinkTotal\x18\b \x01(\x03R\vuplinkTotal\x12$\n" +
 	"\rdownlinkTotal\x18\t \x01(\x03R\rdownlinkTotal\"-\n" +
 	"\x06Groups\x12#\n" +
-	"\x05group\x18\x01 \x03(\v2\r.daemon.GroupR\x05group\"\xae\x01\n" +
+	"\x05group\x18\x01 \x03(\v2\r.daemon.GroupR\x05group\"\xea\x01\n" +
 	"\x05Group\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1e\n" +
@@ -7499,7 +7515,9 @@ const file_daemon_started_service_proto_rawDesc = "" +
 	"selectable\x12\x1a\n" +
 	"\bselected\x18\x04 \x01(\tR\bselected\x12\x1a\n" +
 	"\bisExpand\x18\x05 \x01(\bR\bisExpand\x12'\n" +
-	"\x05items\x18\x06 \x03(\v2\x11.daemon.GroupItemR\x05items\"w\n" +
+	"\x05items\x18\x06 \x03(\v2\x11.daemon.GroupItemR\x05items\x12\x16\n" +
+	"\x06pinned\x18\a \x01(\tR\x06pinned\x12\"\n" +
+	"\fpinSupported\x18\b \x01(\bR\fpinSupported\"w\n" +
 	"\tGroupItem\x12\x10\n" +
 	"\x03tag\x18\x01 \x01(\tR\x03tag\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12 \n" +

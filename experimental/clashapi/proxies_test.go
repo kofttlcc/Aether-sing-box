@@ -3,11 +3,13 @@ package clashapi
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -233,5 +235,127 @@ func TestClashAPIFallbackPinUnpinAndProxyInfo(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for PUT on leaf outbound, got %d", rec.Code)
+	}
+}
+
+type probeControlledOutbound struct {
+	outbound.Adapter
+	probeAddr string
+	allowDial bool
+	dialCalls int
+}
+
+func newProbeControlledOutbound(tag string, probeAddr string, allowDial bool) *probeControlledOutbound {
+	return &probeControlledOutbound{
+		Adapter:   outbound.NewAdapter("direct", tag, []string{N.NetworkTCP, N.NetworkUDP}, nil),
+		probeAddr: probeAddr,
+		allowDial: allowDial,
+	}
+}
+
+func (o *probeControlledOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	o.dialCalls++
+	if !o.allowDial {
+		return nil, net.ErrClosed
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", o.probeAddr)
+}
+
+func (o *probeControlledOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	return nil, net.ErrClosed
+}
+
+type testCertificateStore struct {
+	pool *x509.CertPool
+}
+
+func (s *testCertificateStore) Name() string                                               { return "test-cert" }
+func (s *testCertificateStore) Start(stage adapter.StartStage, scope *adapter.Scope) error { return nil }
+func (s *testCertificateStore) Pool() *x509.CertPool                                       { return s.pool }
+func (s *testCertificateStore) ExclusiveAnchors() bool                                     { return true }
+
+func TestClashAPIGetProxyDelayUnwrapsFallbackWithoutRescueOrBypassingRecoverTimes(t *testing.T) {
+	probeSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer probeSrv.Close()
+	probeAddr := probeSrv.Listener.Addr().String()
+	certPool := x509.NewCertPool()
+	certPool.AddCert(probeSrv.Certificate())
+
+	history := urltest.NewHistoryStorage()
+	defer history.Close()
+
+	node1 := newProbeControlledOutbound("node-1", probeAddr, false)
+	node2 := newProbeControlledOutbound("node-2", probeAddr, true)
+
+	baseMgr := newTestOutboundManager(node1, node2)
+	ctx := context.Background()
+	ctx = service.ContextWith[adapter.CertificateStore](ctx, &testCertificateStore{pool: certPool})
+	ctx = service.ContextWithPtr(ctx, history)
+	ctx = service.ContextWith[adapter.OutboundManager](ctx, baseMgr)
+	logger := log.NewNOPFactory().Logger()
+
+	fbOut, err := group.NewFallback(ctx, nil, logger, "FallbackGroup", option.FallbackOutboundOptions{
+		Outbounds:    []string{"node-1", "node-2"},
+		URL:          probeSrv.URL,
+		FailTimes:    2,
+		RecoverTimes: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewFallback failed: %v", err)
+	}
+	fb := fbOut.(*group.Fallback)
+	if err := fb.Start(adapter.StartStateStart, nil); err != nil {
+		t.Fatalf("Fallback.Start failed: %v", err)
+	}
+
+	fullMgr := newTestOutboundManager(fb, node1, node2)
+	srv := &Server{
+		ctx:            ctx,
+		outbound:       fullMgr,
+		endpoint:       &testEndpointManager{},
+		urlTestHistory: history,
+		logger:         logger,
+	}
+	router := proxyRouter(srv, nil)
+
+	// node-1 is currently selected (optimistic startup), but node-1 is down while node-2 is up.
+	// GET /FallbackGroup/delay must probe node-1 directly (returning 503) WITHOUT rescuing onto node-2
+	// and WITHOUT writing node-2's latency under node-1's history!
+	req := httptest.NewRequest(http.MethodGet, "/FallbackGroup/delay?timeout=1500&url="+probeSrv.URL, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when active primary node-1 fails delay test, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if node2.dialCalls != 0 {
+		t.Fatalf("expected GET /FallbackGroup/delay not to trigger passive rescue onto node-2, got %d dials", node2.dialCalls)
+	}
+	if h1 := history.LoadURLTestHistory("node-1"); h1 != nil {
+		t.Fatalf("did not expect polluted history on failing node-1, got %+v", h1)
+	}
+
+	// Demote node-1 via URLTest so Fallback selects node-2.
+	if _, err := fb.URLTest(context.Background()); err != nil {
+		t.Fatalf("fb.URLTest failed: %v", err)
+	}
+	if got := fb.Selected(N.NetworkTCP).Tag(); got != "node-2" {
+		t.Fatalf("expected fallback selected node-2, got %s", got)
+	}
+
+	// Bring node-1 back up and probe /node-1/delay ONCE.
+	// PerformUpdateCheck must respect recover_times=2 and hold on node-2 until the 2nd probe!
+	node1.allowDial = true
+	req = httptest.NewRequest(http.MethodGet, "/node-1/delay?timeout=1500&url="+probeSrv.URL, nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on 1st recovered /node-1/delay, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := fb.Selected(N.NetworkTCP).Tag(); got != "node-2" {
+		t.Fatalf("expected PerformUpdateCheck to respect recover_times=2 after 1st probe, got %s", got)
 	}
 }

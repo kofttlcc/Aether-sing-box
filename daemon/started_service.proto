@@ -121,6 +121,8 @@ message Group {
   string selected = 4;
   bool isExpand = 5;
   repeated GroupItem items = 6;
+  string pinned = 7;
+  bool pinSupported = 8;
 }
 
 message GroupItem {

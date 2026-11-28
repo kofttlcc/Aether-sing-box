@@ -71,7 +71,11 @@ func proxyInfo(server *Server, detour adapter.Outbound) *badjson.JSONObject {
 	info.Put("type", clashType)
 	info.Put("name", detour.Tag())
 	info.Put("udp", common.Contains(detour.Network(), N.NetworkUDP))
-	delayHistory := server.urlTestHistory.LoadURLTestHistory(group.RealTag(detour, N.NetworkTCP))
+	realTag := group.RealTag(detour, N.NetworkTCP)
+	if realTag == "" {
+		realTag = group.RealTag(detour, N.NetworkUDP)
+	}
+	delayHistory := server.urlTestHistory.LoadURLTestHistory(realTag)
 	if delayHistory != nil {
 		info.Put("history", []*adapter.URLTestHistory{delayHistory})
 	} else {
@@ -81,6 +85,10 @@ func proxyInfo(server *Server, detour adapter.Outbound) *badjson.JSONObject {
 		var now string
 		if selected := outboundGroup.Selected(N.NetworkTCP); selected != nil {
 			now = selected.Tag()
+		} else if selectedUDP := outboundGroup.Selected(N.NetworkUDP); selectedUDP != nil {
+			now = selectedUDP.Tag()
+		} else if fb, isFallback := detour.(*group.Fallback); isFallback && fb.PinnedTag() != "" {
+			now = fb.PinnedTag()
 		}
 		info.Put("now", now)
 		info.Put("all", outboundGroup.All())
@@ -249,12 +257,44 @@ func getProxyDelay(server *Server) func(w http.ResponseWriter, r *http.Request) 
 		}
 
 		proxy := r.Context().Value(CtxKeyProxy).(adapter.Outbound)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(timeout))
+		targetProxy := proxy
+		visited := map[string]bool{proxy.Tag(): true}
+		for {
+			outboundGroup, isGroup := targetProxy.(adapter.OutboundGroup)
+			if !isGroup {
+				break
+			}
+			selected := outboundGroup.Selected(N.NetworkTCP)
+			if selected == nil {
+				selected = outboundGroup.Selected(N.NetworkUDP)
+			}
+			if selected == nil || visited[selected.Tag()] {
+				break
+			}
+			visited[selected.Tag()] = true
+			targetProxy = selected
+		}
+		if _, stillGroup := targetProxy.(adapter.OutboundGroup); stillGroup {
+			render.Status(r, http.StatusServiceUnavailable)
+			render.JSON(w, r, newError("An error occurred in the delay test"))
+			return
+		}
+		baseCtx := server.ctx
+		if baseCtx == nil {
+			baseCtx = r.Context()
+		}
+		ctx, cancel := context.WithTimeout(baseCtx, time.Millisecond*time.Duration(timeout))
 		defer cancel()
 
-		delay, err := urltest.URLTest(ctx, url, proxy)
+		delay, err := urltest.URLTest(ctx, url, targetProxy)
 		defer func() {
-			realTag := group.RealTag(proxy, N.NetworkTCP)
+			realTag := targetProxy.Tag()
+			if realTag == "" {
+				realTag = group.RealTag(proxy, N.NetworkTCP)
+			}
+			if realTag == "" {
+				return
+			}
 			if err != nil {
 				server.urlTestHistory.DeleteURLTestHistory(realTag)
 			} else {

@@ -135,6 +135,7 @@ func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, co
 		m.logger.ErrorContext(ctx, err)
 		return
 	}
+	dialedConn := remoteConn
 	if metadata.TLSFragment || metadata.TLSRecordFragment {
 		remoteConn = tf.NewConn(remoteConn, ctx, metadata.TLSFragment, metadata.TLSRecordFragment, metadata.TLSFragmentFallbackDelay)
 	}
@@ -151,10 +152,10 @@ func (m *ConnectionManager) NewConnection(ctx context.Context, this N.Dialer, co
 	}
 	serverFirst := sniff.Skip(&metadata)
 	var done atomic.Bool
-	if m.kickWriteHandshake(ctx, conn, remoteConn, serverFirst, false, &done, onClose) {
+	if m.kickWriteHandshake(ctx, conn, remoteConn, dialedConn, serverFirst, false, &done, onClose) {
 		return
 	}
-	if m.kickWriteHandshake(ctx, remoteConn, conn, serverFirst, true, &done, onClose) {
+	if m.kickWriteHandshake(ctx, remoteConn, conn, nil, serverFirst, true, &done, onClose) {
 		return
 	}
 	go m.connectionCopy(ctx, conn, remoteConn, false, &done, onClose)
@@ -170,16 +171,18 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 		err                error
 	)
 	if metadata.UDPConnect {
-		parallelDialer, isParallelDialer := this.(dialer.ParallelInterfaceDialer)
+		_, isParallelInterface := this.(dialer.ParallelInterfaceDialer)
+		_, isParallelNetwork := this.(dialer.ParallelNetworkDialer)
+		isParallelDialer := isParallelInterface || isParallelNetwork
 		if len(metadata.DestinationAddresses) > 0 {
 			if isParallelDialer {
-				remoteConn, err = dialer.DialSerialNetwork(ctx, parallelDialer, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
+				remoteConn, err = dialer.DialSerialNetwork(ctx, this, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
 			} else {
 				remoteConn, err = N.DialSerial(ctx, this, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses)
 			}
 		} else if metadata.Destination.IsIP() {
 			if isParallelDialer {
-				remoteConn, err = dialer.DialSerialNetwork(ctx, parallelDialer, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
+				remoteConn, err = dialer.DialSerialNetwork(ctx, this, N.NetworkUDP, metadata.Destination, metadata.DestinationAddresses, metadata.NetworkStrategy, metadata.NetworkType, metadata.FallbackNetworkType, metadata.FallbackDelay)
 			} else {
 				remoteConn, err = this.DialContext(ctx, N.NetworkUDP, metadata.Destination)
 			}
@@ -282,6 +285,15 @@ func (m *ConnectionManager) NewPacketConnection(ctx context.Context, this N.Dial
 }
 
 func (m *ConnectionManager) deleteURLTestHistory(chain []adapter.Outbound) {
+	if len(chain) == 0 {
+		return
+	}
+	if slices.ContainsFunc(chain, func(it adapter.Outbound) bool {
+		dialerGroup, ok := it.(adapter.DialerOutboundGroup)
+		return ok && dialerGroup.DialByGroup()
+	}) {
+		return
+	}
 	if slices.ContainsFunc(chain, func(it adapter.Outbound) bool {
 		_, isURLTestGroup := it.(adapter.URLTestGroup)
 		return isURLTestGroup
@@ -331,7 +343,7 @@ func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn,
 	}
 }
 
-func (m *ConnectionManager) kickWriteHandshake(ctx context.Context, source net.Conn, destination net.Conn, serverFirst bool, direction bool, done *atomic.Bool, onClose N.CloseHandlerFunc) bool {
+func (m *ConnectionManager) kickWriteHandshake(ctx context.Context, source net.Conn, destination net.Conn, observerTarget net.Conn, serverFirst bool, direction bool, done *atomic.Bool, onClose N.CloseHandlerFunc) bool {
 	if !N.NeedHandshakeForWrite(destination) {
 		return false
 	}
@@ -374,6 +386,11 @@ func (m *ConnectionManager) kickWriteHandshake(ctx context.Context, source net.C
 	}
 	if !wrotePayload && (E.IsMulti(err, os.ErrInvalid, context.DeadlineExceeded, io.EOF) || E.IsTimeout(err)) {
 		return false
+	}
+	if !direction && observerTarget != nil && ctx.Err() == nil {
+		if observer, ok := common.Cast[adapter.HandshakeResultObserver](observerTarget); ok {
+			observer.OnHandshakeFailure(err)
+		}
 	}
 	if !done.Swap(true) {
 		if onClose != nil {

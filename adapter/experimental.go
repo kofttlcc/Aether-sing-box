@@ -155,6 +155,16 @@ type OutboundGroup interface {
 	AttachConnection(closer io.Closer) (detach func())
 }
 
+type DialerOutboundGroup interface {
+	OutboundGroup
+	DialByGroup() bool
+}
+
+type HandshakeResultObserver interface {
+	OnHandshakeSuccess()
+	OnHandshakeFailure(err error)
+}
+
 type URLTestGroup interface {
 	OutboundGroup
 	URLTest(ctx context.Context) (map[string]uint16, error)

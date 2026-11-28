@@ -601,12 +601,20 @@ func (s *StartedService) readGroups() *Groups {
 		var g Group
 		g.Tag = iGroup.Tag()
 		g.Type = iGroup.Type()
-		switch iGroup.(type) {
-		case *group.Selector, *group.Fallback:
+		switch typedGroup := iGroup.(type) {
+		case *group.Selector:
 			g.Selectable = true
+		case *group.Fallback:
+			g.Selectable = true
+			g.PinSupported = true
+			g.Pinned = typedGroup.PinnedTag()
 		}
 		if selected := iGroup.Selected(N.NetworkTCP); selected != nil {
 			g.Selected = selected.Tag()
+		} else if selectedUDP := iGroup.Selected(N.NetworkUDP); selectedUDP != nil {
+			g.Selected = selectedUDP.Tag()
+		} else if g.Pinned != "" {
+			g.Selected = g.Pinned
 		}
 		if boxService.cacheFile != nil {
 			if isExpand, loaded := boxService.cacheFile.LoadGroupExpand(g.Tag); loaded {

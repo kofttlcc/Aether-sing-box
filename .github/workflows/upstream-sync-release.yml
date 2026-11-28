@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 2 * * 1'
   workflow_dispatch:
+    inputs:
+      force_republish:
+        description: 'Force rebuild and republish release assets from current HEAD even if already synced'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -19,6 +25,7 @@ jobs:
     timeout-minutes: 60
     env:
       GH_REPO: ${{ github.repository }}
+      FORCE_REPUBLISH: ${{ (inputs.force_republish == true || github.event.inputs.force_republish == 'true') && 'true' || 'false' }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -125,14 +132,14 @@ jobs:
             RELEASE_EXISTS=true
           fi
 
-          if [ "${IS_ANCESTOR}" = "true" ] && [ "${RELEASE_EXISTS}" = "true" ]; then
+          if [ "${FORCE_REPUBLISH:-false}" != "true" ] && [ "${IS_ANCESTOR}" = "true" ] && [ "${RELEASE_EXISTS}" = "true" ]; then
             echo "Already synced and released: ${UPSTREAM_TAG} is ancestor of HEAD and published release ${RELEASE_TAG} exists."
             echo "should_proceed=false" >> "${GITHUB_OUTPUT:-/dev/null}"
             echo "SHOULD_PROCEED=false" >> "${GITHUB_ENV:-/dev/null}"
             exit 0
           fi
 
-          echo "Proceeding with sync and release for ${UPSTREAM_TAG} (ancestor=${IS_ANCESTOR}, release_exists=${RELEASE_EXISTS})."
+          echo "Proceeding with sync and release for ${UPSTREAM_TAG} (ancestor=${IS_ANCESTOR}, release_exists=${RELEASE_EXISTS}, force_republish=${FORCE_REPUBLISH:-false})."
           echo "should_proceed=true" >> "${GITHUB_OUTPUT:-/dev/null}"
           echo "SHOULD_PROCEED=true" >> "${GITHUB_ENV:-/dev/null}"
 
@@ -259,7 +266,16 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           set -euo pipefail
-          CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/... ./protocol/group/... ./experimental/clashapi/... -timeout 30m
+          LDFLAGS_SHARED=""
+          if [ -f release/LDFLAGS ]; then
+            LDFLAGS_SHARED="$(cat release/LDFLAGS)"
+          fi
+          BUILD_TAGS="with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
+          TAGS_FILE="release/DEFAULT_BUILD_TAGS_OTHERS"
+          if [ -f "${TAGS_FILE}" ]; then
+            BUILD_TAGS="$(tr -d ' \t\r\n' < "${TAGS_FILE}")"
+          fi
+          CGO_ENABLED=1 go test -race -count=1 ./cmd/sing-box/... ./option/... ./schema/... ./protocol/aether/... ./route/... ./daemon/... ./protocol/group/... ./experimental/clashapi/... -tags "${BUILD_TAGS}" -ldflags "${LDFLAGS_SHARED}" -timeout 30m
 
       - name: Build and Package Multi-Arch Static Binaries
         if: steps.idempotency.outputs.should_proceed == 'true'
@@ -379,12 +395,12 @@ jobs:
           done < <(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" 2>/dev/null || true)
 
           EXISTING_TAG_COMMIT="${REMOTE_TAG_COMMIT:-${LOCAL_TAG_COMMIT}}"
-          if [ "${HAS_PUBLISHED_RELEASE}" = "true" ] && [ -n "${EXISTING_TAG_COMMIT}" ] && [ "${EXISTING_TAG_COMMIT}" != "${HEAD_SHA}" ]; then
+          if [ "${FORCE_REPUBLISH:-false}" != "true" ] && [ "${HAS_PUBLISHED_RELEASE}" = "true" ] && [ -n "${EXISTING_TAG_COMMIT}" ] && [ "${EXISTING_TAG_COMMIT}" != "${HEAD_SHA}" ]; then
             echo "::error::Published release ${RELEASE_TAG} already exists on ${TARGET_REPO:-origin} at ${EXISTING_TAG_COMMIT}; refusing to move tag to ${HEAD_SHA}"
             exit 1
           fi
 
-          # Create or align annotated tag with HEAD (only move an existing orphaned tag when no complete published release exists).
+          # Create or align annotated tag with HEAD (only move an existing orphaned tag when no complete published release exists, or when FORCE_REPUBLISH=true).
           NEED_TAG_PUSH=true
           FORCE_TAG_PUSH=false
           if [ "${REMOTE_TAG_COMMIT}" = "${HEAD_SHA}" ]; then
@@ -411,7 +427,7 @@ jobs:
           RELEASE_TITLE="Aether-sing-box ${RELEASE_TAG}"
           RELEASE_NOTES="Automated upstream sync with SagerNet/sing-box ${UPSTREAM_TAG} (passed CGO_ENABLED=1 -race test gate)."
 
-          if [ "${HAS_PUBLISHED_RELEASE}" = "true" ]; then
+          if [ "${FORCE_REPUBLISH:-false}" != "true" ] && [ "${HAS_PUBLISHED_RELEASE}" = "true" ]; then
             echo "Published release ${RELEASE_TAG} already contains all expected assets; skipping release modification."
           elif [ "${RELEASE_EXISTS_ON_GITHUB}" = "true" ]; then
             gh release upload "${RELEASE_TAG}" \
